@@ -2449,6 +2449,66 @@ select:focus {
   border-radius: 8px;
 }
 
+.users-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 150px auto;
+  gap: 14px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid #e1e8f0;
+  background: #fbfcfe;
+  border-radius: 8px;
+}
+
+.users-toolbar label {
+  display: grid;
+  gap: 6px;
+}
+
+.users-toolbar label span,
+.compact-field span {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.users-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.users-pagination span {
+  color: #667085;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.compact-field {
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.compact-field input {
+  min-width: 210px;
+}
+
+.role-select {
+  min-width: 190px;
+}
+
+.role-note {
+  padding: 10px 12px;
+  color: #475467;
+  background: #f8fafc;
+  border: 1px dashed #d8e0ea;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -2484,7 +2544,7 @@ select:focus {
 
 .users-table th:nth-child(5),
 .users-table td:nth-child(5) {
-  min-width: 360px;
+  min-width: 320px;
 }
 
 .submission-table input,
@@ -2653,8 +2713,13 @@ select:focus {
   }
 
   .list-row-fields,
-  .permission-grid {
+  .permission-grid,
+  .users-toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .users-pagination {
+    justify-content: flex-start;
   }
 
   .nested-panel-head {

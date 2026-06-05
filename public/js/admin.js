@@ -57,6 +57,11 @@
     user: JSON.parse(storage.getItem(userKey) || "{}"),
     data: null,
     users: [],
+    usersLoaded: false,
+    usersLoading: false,
+    usersSearch: "",
+    usersPage: 1,
+    usersPageSize: 10,
     tab: "dashboard",
     selected: {
       pages: 0,
@@ -148,6 +153,18 @@
       throw new Error(payload.error || "Request failed");
     }
     return payload;
+  }
+
+  async function loadUsers(force = false) {
+    if (!state.user.isAdmin) return;
+    if (state.usersLoaded && !force) return;
+    state.usersLoading = true;
+    try {
+      state.users = await api("/api/admin/users", { timeoutMs: 60000 });
+      state.usersLoaded = true;
+    } finally {
+      state.usersLoading = false;
+    }
   }
 
   function setStatus(message, tone = "info") {
@@ -302,7 +319,7 @@
       gallery: (data.gallery || []).length,
       applications: (data.applications || []).length,
       messages: (data.messages || []).length,
-      users: (state.users || []).filter((user) => user.user_id).length
+      users: state.usersLoaded ? (state.users || []).filter((user) => user.user_id).length : ""
     };
   }
 
@@ -391,9 +408,21 @@
     `;
 
     adminApp.querySelectorAll("[data-tab]").forEach((button) => {
-      button.addEventListener("click", () => {
+      button.addEventListener("click", async () => {
         collectCurrentForm();
         state.tab = button.dataset.tab;
+        if (state.tab === "users" && state.user.isAdmin && !state.usersLoaded) {
+          state.usersLoading = true;
+          renderAdmin();
+          try {
+            await loadUsers();
+            renderAdmin();
+          } catch (error) {
+            renderAdmin();
+            setStatus(error.message || "Users could not be loaded.", "error");
+          }
+          return;
+        }
         renderAdmin();
       });
     });
@@ -405,6 +434,8 @@
       state.user = {};
       state.data = null;
       state.users = [];
+      state.usersLoaded = false;
+      state.usersLoading = false;
       renderLogin();
     });
   }
@@ -498,7 +529,7 @@
       <div class="admin-dashboard-hero">
         <div>
           <span>Website control center</span>
-          <h2>Manage content, members, career posts, and forum activity.</h2>
+          <h2>Manage content, members, applications, and user access.</h2>
           <p>Each editor has its own save button, so updates stay scoped to the section you are working on.</p>
         </div>
         <strong>${counts.pages + counts.posts + counts.committee + counts.members + counts.gallery}</strong>
@@ -855,37 +886,109 @@
     `;
   }
 
+  function userRole(user = {}) {
+    if (user.is_admin) return "admin";
+    return normalizePermissions(user.permissions || []).size ? "custom" : "member";
+  }
+
+  function roleSelect(value, options = {}) {
+    const disabled = options.disabled ? "disabled" : "";
+    const attrs = [
+      `class="role-select${options.newUser ? " new-user-role" : ""}"`,
+      options.userId ? `data-user-id="${escapeHtml(options.userId)}"` : "",
+      options.userKey ? `data-user-key="${escapeHtml(options.userKey)}"` : "",
+      options.memberId ? `data-member-id="${escapeHtml(options.memberId)}"` : "",
+      disabled
+    ].filter(Boolean).join(" ");
+    return `
+      <select ${attrs} name="${options.newUser ? "role" : ""}">
+        <option value="member" ${value === "member" ? "selected" : ""}>Normal member</option>
+        <option value="custom" ${value === "custom" ? "selected" : ""}>Custom admin menu</option>
+        <option value="admin" ${value === "admin" ? "selected" : ""}>Full admin</option>
+      </select>
+    `;
+  }
+
+  function roleHelp(role) {
+    if (role === "admin") return "Can access every admin menu.";
+    if (role === "custom") return "Can access only selected admin menus.";
+    return "Profile and forum only. No admin panel access.";
+  }
+
   function renderUsers() {
+    if (state.usersLoading) {
+      return `
+        ${panelIntro("Users and permissions", "Loading users only when this tab is opened.")}
+        <p class="empty-admin">Loading users...</p>
+      `;
+    }
+
     const memberOptions = (state.data.members || [])
       .map((member) => `<option value="${escapeHtml(member.id || "")}">${escapeHtml(member.name || "Member")} ${member.email ? `(${escapeHtml(member.email)})` : ""}</option>`)
       .join("");
 
-    const rows = (state.users || []).map((user) => {
+    const query = state.usersSearch.trim().toLowerCase();
+    const filteredUsers = (state.users || []).filter((user) => {
+      if (!query) return true;
+      return [
+        user.name,
+        user.email,
+        user.phone,
+        user.member_id,
+        user.user_id,
+        user.batch,
+        user.type
+      ].some((value) => String(value || "").toLowerCase().includes(query));
+    });
+    const pageSize = Number(state.usersPageSize) || 10;
+    const totalPages = Math.max(1, Math.ceil(filteredUsers.length / pageSize));
+    state.usersPage = Math.min(Math.max(1, Number(state.usersPage) || 1), totalPages);
+    const start = (state.usersPage - 1) * pageSize;
+    const visibleUsers = filteredUsers.slice(start, start + pageSize);
+    const summary = filteredUsers.length
+      ? `Showing ${start + 1}-${Math.min(start + pageSize, filteredUsers.length)} of ${filteredUsers.length}`
+      : "No users found";
+
+    const rows = visibleUsers.map((user, index) => {
       const hasAccount = !!user.user_id;
+      const rowKey = hasAccount ? String(user.user_id) : `member-${user.member_id || index}`;
+      const role = userRole(user);
+      const showPermissions = role === "custom";
+      const permissionsHtml = showPermissions
+        ? permissionChecks(user.permissions || [], `perm-${rowKey}`, !hasAccount && role !== "custom")
+          .replaceAll(`class="perm-${rowKey}-cb"`, `class="perm-cb" data-user-key="${escapeHtml(rowKey)}"`)
+        : `<div class="role-note">${escapeHtml(roleHelp(role))}</div>`;
       return `
-        <tr class="${hasAccount ? "" : "no-account"}">
+        <tr class="${hasAccount ? "" : "no-account"}" data-user-row data-user-key="${escapeHtml(rowKey)}">
           <td>
             <strong>${escapeHtml(user.name || user.email || "")}</strong>
             <small>${user.member_id ? `Member #${escapeHtml(user.member_id)}` : "Standalone user"}</small>
+            ${user.phone ? `<small>${escapeHtml(user.phone)}</small>` : ""}
           </td>
           <td>
-            <input class="email-inp" data-member-id="${escapeHtml(user.member_id || "")}" value="${escapeHtml(user.email || "")}" ${hasAccount ? "readonly" : ""}>
+            <label class="admin-field compact-field">
+              <span>Login email</span>
+              <input class="email-inp" data-user-key="${escapeHtml(rowKey)}" data-user-id="${escapeHtml(user.user_id || "")}" data-member-id="${escapeHtml(user.member_id || "")}" value="${escapeHtml(user.email || "")}">
+            </label>
+            <label class="admin-field compact-field">
+              <span>${hasAccount ? "New password" : "Initial password"}</span>
+              <input class="password-inp" data-user-key="${escapeHtml(rowKey)}" type="password" placeholder="${hasAccount ? "Leave blank to keep" : "Default: phone or 12345678"}">
+            </label>
+            <small>${hasAccount ? `User ID: ${escapeHtml(user.user_id)}` : "Account not created yet"}</small>
           </td>
-          <td>${escapeHtml(user.phone || "")}</td>
           <td>${hasAccount ? `<span class="badge badge-active">Active</span>` : `<span class="badge badge-none">No account</span>`}</td>
           <td>
-            <label class="perm-check admin-toggle">
-              <input type="checkbox" class="user-admin-cb" data-user-id="${escapeHtml(user.user_id || "")}" ${user.is_admin ? "checked" : ""} ${!hasAccount ? "disabled" : ""}>
-              <span>Full admin</span>
-            </label>
-            ${permissionChecks(user.permissions || [], `perm-${user.user_id || user.member_id || "new"}`, !hasAccount)
-        .replaceAll(`class="perm-${user.user_id || user.member_id || "new"}-cb"`, `class="perm-cb" data-user-id="${escapeHtml(user.user_id || "")}"`)}
+            ${roleSelect(role, { userId: user.user_id || "", userKey: rowKey, memberId: user.member_id || "" })}
+            <small>${escapeHtml(roleHelp(role))}</small>
+          </td>
+          <td>
+            ${permissionsHtml}
           </td>
           <td class="row-action-cell">
             ${hasAccount
-          ? `<button class="plain-button save-perms" data-user-id="${escapeHtml(user.user_id)}" type="button">Save</button>
+          ? `<button class="plain-button primary save-user" data-user-id="${escapeHtml(user.user_id)}" data-user-key="${escapeHtml(rowKey)}" data-member-id="${escapeHtml(user.member_id || "")}" type="button">Save user</button>
                  <button class="plain-button" data-reset-user="${escapeHtml(user.user_id)}" type="button">Reset password</button>`
-          : `<button class="plain-button create-user" data-member-id="${escapeHtml(user.member_id || "")}" type="button">Create account</button>`}
+          : `<button class="plain-button create-user" data-member-id="${escapeHtml(user.member_id || "")}" data-user-key="${escapeHtml(rowKey)}" type="button">Create account</button>`}
           </td>
         </tr>
       `;
@@ -921,17 +1024,34 @@
           ${field("Email", "email", "", "email")}
           ${field("Phone", "phone", "")}
           ${field("Initial password", "password", "", "password")}
-          <label class="perm-check admin-toggle wide-field">
-            <input type="checkbox" name="isAdmin" value="1">
-            <span>Full admin account</span>
+          <label class="admin-field wide-field">
+            <span>Role</span>
+            ${roleSelect("member", { newUser: true })}
           </label>
-          <div class="wide-field">${permissionChecks([], "new-perm")}</div>
+          <div class="wide-field" data-new-user-permissions hidden>${permissionChecks([], "new-perm")}</div>
         </div>
       </form>
+      <div class="users-toolbar">
+        <label>
+          <span>Search users</span>
+          <input data-users-search value="${escapeHtml(state.usersSearch)}" placeholder="Name, email, phone, member ID">
+        </label>
+        <label>
+          <span>Rows per page</span>
+          <select data-users-page-size>
+            ${[10, 25, 50, 100].map((size) => `<option value="${size}" ${size === pageSize ? "selected" : ""}>${size}</option>`).join("")}
+          </select>
+        </label>
+        <div class="users-pagination">
+          <span>${escapeHtml(summary)}</span>
+          <button class="plain-button" data-users-page="${state.usersPage - 1}" type="button" ${state.usersPage <= 1 ? "disabled" : ""}>Prev</button>
+          <button class="plain-button" data-users-page="${state.usersPage + 1}" type="button" ${state.usersPage >= totalPages ? "disabled" : ""}>Next</button>
+        </div>
+      </div>
       <div class="table-wrap users-wrap">
         <table class="members-table admin-table users-table">
           <thead>
-            <tr><th>Name</th><th>Email</th><th>Phone</th><th>Status</th><th>Permissions</th><th>Actions</th></tr>
+            <tr><th>Member</th><th>Login</th><th>Status</th><th>Role</th><th>Permissions</th><th>Actions</th></tr>
           </thead>
           <tbody>${rows || `<tr><td colspan="6">No users or members found.</td></tr>`}</tbody>
         </table>
@@ -1241,7 +1361,7 @@
         try {
           const result = await api("/api/admin/users/sync-committee", { method: "POST" });
           state.data = await api("/api/admin/site");
-          state.users = await api("/api/admin/users");
+          await loadUsers(true);
           renderAdmin();
           setStatus(
             `Sync complete. Members created: ${result.membersCreated || 0}, users created: ${result.usersCreated || 0}, Khaled admins: ${(result.khaledAdmins || []).length}.`,
@@ -1253,20 +1373,68 @@
       });
     });
 
+    const usersSearch = adminApp.querySelector("[data-users-search]");
+    if (usersSearch) {
+      usersSearch.addEventListener("input", () => {
+        state.usersSearch = usersSearch.value;
+        state.usersPage = 1;
+        renderAdmin();
+      });
+    }
+
+    const usersPageSize = adminApp.querySelector("[data-users-page-size]");
+    if (usersPageSize) {
+      usersPageSize.addEventListener("change", () => {
+        state.usersPageSize = Number(usersPageSize.value) || 10;
+        state.usersPage = 1;
+        renderAdmin();
+      });
+    }
+
+    adminApp.querySelectorAll("[data-users-page]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.usersPage = Number(button.dataset.usersPage) || 1;
+        renderAdmin();
+      });
+    });
+
+    adminApp.querySelectorAll(".role-select:not(.new-user-role)").forEach((select) => {
+      select.addEventListener("change", () => {
+        const userKey = select.dataset.userKey;
+        const user = state.users.find((item) => String(item.user_id || `member-${item.member_id || ""}`) === String(userKey));
+        if (user) {
+          user.is_admin = select.value === "admin" ? 1 : 0;
+          if (select.value !== "custom") user.permissions = [];
+        }
+        renderAdmin();
+      });
+    });
+
     const newUserForm = adminApp.querySelector("#newUserForm");
     if (newUserForm) {
+      const newUserRole = newUserForm.querySelector(".new-user-role");
+      const newUserPermissions = newUserForm.querySelector("[data-new-user-permissions]");
+      if (newUserRole && newUserPermissions) {
+        newUserRole.addEventListener("change", () => {
+          newUserPermissions.hidden = newUserRole.value !== "custom";
+        });
+      }
+
       newUserForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         const payload = Object.fromEntries(new FormData(newUserForm).entries());
-        payload.permissions = [...newUserForm.querySelectorAll(".new-perm-cb:checked")].map((input) => input.value);
-        payload.isAdmin = !!newUserForm.querySelector("[name='isAdmin']").checked;
+        const role = payload.role || "member";
+        payload.permissions = role === "custom"
+          ? [...newUserForm.querySelectorAll(".new-perm-cb:checked")].map((input) => input.value)
+          : [];
+        payload.isAdmin = role === "admin";
         setStatus("Creating user...");
         try {
           const result = await api("/api/admin/users/create", {
             method: "POST",
             body: JSON.stringify(payload)
           });
-          state.users = await api("/api/admin/users");
+          await loadUsers(true);
           renderAdmin();
           setStatus(`User created. Initial password: ${result.initialPassword || payload.password || payload.phone || "12345678"}`, "success");
         } catch (error) {
@@ -1278,7 +1446,13 @@
     adminApp.querySelectorAll(".create-user").forEach((button) => {
       button.addEventListener("click", async () => {
         const memberId = button.dataset.memberId;
-        const emailInput = adminApp.querySelector(`.email-inp[data-member-id="${CSS.escape(memberId)}"]`);
+        const userKey = button.dataset.userKey;
+        const emailInput = adminApp.querySelector(`.email-inp[data-user-key="${CSS.escape(userKey)}"]`);
+        const passwordInput = adminApp.querySelector(`.password-inp[data-user-key="${CSS.escape(userKey)}"]`);
+        const role = adminApp.querySelector(`.role-select[data-user-key="${CSS.escape(userKey)}"]`)?.value || "member";
+        const permissions = role === "custom"
+          ? [...adminApp.querySelectorAll(`.perm-cb[data-user-key="${CSS.escape(userKey)}"]:checked`)].map((input) => input.value)
+          : [];
         const row = state.users.find((user) => String(user.member_id || "") === String(memberId || ""));
         const email = emailInput ? emailInput.value.trim() : "";
         if (!email) {
@@ -1289,36 +1463,58 @@
         try {
           const result = await api("/api/admin/users/create", {
             method: "POST",
-            body: JSON.stringify({ memberId, email, phone: row?.phone || "" })
+            body: JSON.stringify({
+              memberId,
+              email,
+              phone: row?.phone || "",
+              password: passwordInput?.value || "",
+              permissions,
+              isAdmin: role === "admin"
+            })
           });
-          state.users = await api("/api/admin/users");
+          await loadUsers(true);
           renderAdmin();
-          setStatus(`Account created. Initial password: ${result.initialPassword || row?.phone || "12345678"}`, "success");
+          setStatus(`Account created. Initial password: ${result.initialPassword || passwordInput?.value || row?.phone || "12345678"}`, "success");
         } catch (error) {
           setStatus(error.message || "Account create failed.", "error");
         }
       });
     });
 
-    adminApp.querySelectorAll(".save-perms").forEach((button) => {
+    adminApp.querySelectorAll(".save-user").forEach((button) => {
       button.addEventListener("click", async () => {
         const userId = button.dataset.userId;
-        const permissions = [...adminApp.querySelectorAll(`.perm-cb[data-user-id="${CSS.escape(userId)}"]:checked`)].map((input) => input.value);
-        const isAdmin = !!adminApp.querySelector(`.user-admin-cb[data-user-id="${CSS.escape(userId)}"]`)?.checked;
-        setStatus("Saving permissions...");
+        const userKey = button.dataset.userKey;
+        const memberId = button.dataset.memberId;
+        const email = adminApp.querySelector(`.email-inp[data-user-key="${CSS.escape(userKey)}"]`)?.value.trim() || "";
+        const password = adminApp.querySelector(`.password-inp[data-user-key="${CSS.escape(userKey)}"]`)?.value || "";
+        const role = adminApp.querySelector(`.role-select[data-user-key="${CSS.escape(userKey)}"]`)?.value || "member";
+        const permissions = role === "custom"
+          ? [...adminApp.querySelectorAll(`.perm-cb[data-user-key="${CSS.escape(userKey)}"]:checked`)].map((input) => input.value)
+          : [];
+        const isAdmin = role === "admin";
+        setStatus("Saving user...");
         try {
+          await api("/api/admin/users/account", {
+            method: "POST",
+            body: JSON.stringify({ userId, memberId, email, password })
+          });
           await api("/api/admin/users/permissions", {
             method: "POST",
             body: JSON.stringify({ userId, permissions, isAdmin })
           });
           const user = state.users.find((item) => String(item.user_id) === String(userId));
           if (user) {
+            user.email = email;
             user.permissions = permissions;
             user.is_admin = isAdmin ? 1 : 0;
           }
-          setStatus("Permissions saved.", "success");
+          const member = (state.data.members || []).find((item) => String(item.id || "") === String(memberId || ""));
+          if (member && email) member.email = email;
+          renderAdmin();
+          setStatus("User saved.", "success");
         } catch (error) {
-          setStatus(error.message || "Permission save failed.", "error");
+          setStatus(error.message || "User save failed.", "error");
         }
       });
     });
@@ -1415,9 +1611,9 @@
       if (!state.data.applications) state.data.applications = [];
       if (!state.data.messages) state.data.messages = [];
 
-      if (state.user.isAdmin) {
-        state.users = await api("/api/admin/users");
-      }
+      state.users = [];
+      state.usersLoaded = false;
+      state.usersLoading = false;
 
       if (!canOpenTab(state.tab)) {
         state.tab = availableTabs()[0]?.[0] || "dashboard";

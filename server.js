@@ -666,6 +666,34 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/admin/users/account") {
+    if (!session.user.is_admin) {
+      sendJson(res, 403, { error: "Permission denied" });
+      return;
+    }
+    const body = await readBody(req);
+    if (!body.userId) {
+      sendJson(res, 400, { error: "User is required" });
+      return;
+    }
+    const accountResult = await updateUserAccount(body.userId, {
+      email: body.email
+    });
+    if (accountResult.error) {
+      sendJson(res, 400, accountResult);
+      return;
+    }
+    if (body.memberId && body.email) {
+      const member = await getMemberById(Number(body.memberId));
+      if (member) await updateMemberProfile(member.id, { ...member, email: body.email });
+    }
+    if (body.password) {
+      await updateUserPassword(body.userId, body.password);
+    }
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/admin/users/permissions") {
     if (!session.user.is_admin) {
       sendJson(res, 403, { error: "Permission denied" });

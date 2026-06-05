@@ -1159,7 +1159,9 @@
     });
     setAuth(result.token, result.user);
     await loadAuth();
-    await refreshForum().catch(() => {});
+    if (normalizePath(window.location.pathname) === "/forum/") {
+      await refreshForum().catch(() => {});
+    }
     renderPage({ preserveScroll: true });
   }
 
@@ -1186,12 +1188,16 @@
   function bindPageEvents() {
     // SPA link hijack
     app.querySelectorAll("a[href^='/']").forEach((anchor) => {
-      anchor.addEventListener("click", (event) => {
+      anchor.addEventListener("click", async (event) => {
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
         const href = anchor.getAttribute("href");
         if (href.includes(".")) return;
         event.preventDefault();
         history.pushState({}, "", href);
+        if (normalizePath(window.location.pathname) === "/forum/") {
+          await refreshForumAndRender().catch(() => renderPage());
+          return;
+        }
         renderPage();
       });
     });
@@ -1460,7 +1466,7 @@
     state.data = await response.json();
     state.data.forumPosts = state.data.forumPosts || [];
     await loadAuth();
-    if (normalizePath(window.location.pathname) === "/forum/" || state.authUser) {
+    if (normalizePath(window.location.pathname) === "/forum/") {
       await refreshForum().catch(() => {});
     }
     renderPage();
@@ -1472,7 +1478,13 @@
     }, 5000);
   }
 
-  window.addEventListener("popstate", renderPage);
+  window.addEventListener("popstate", () => {
+    if (normalizePath(window.location.pathname) === "/forum/") {
+      refreshForumAndRender().catch(() => renderPage());
+      return;
+    }
+    renderPage();
+  });
   init().catch(() => {
     app.innerHTML = `<div class="loading">সাইট লোড করা যায়নি।</div>`;
   });

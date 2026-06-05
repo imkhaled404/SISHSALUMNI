@@ -342,30 +342,29 @@ function ensureDefaultContent(site) {
 }
 
 async function readSite(includePrivate = false) {
-  const members = await readSimpleRows("members", (r) => ({
-    id: r.id,
-    name: r.name,
-    email: r.email,
-    phone: r.phone,
-    address: r.address,
-    batch: r.batch,
-    type: r.type,
-    image: r.image
-  }));
-  const membersById = new Map(members.map((member) => [String(member.id), member]));
-
-  const site = {
-    updatedAt: await getMeta("updatedAt", new Date().toISOString()),
-    settings: await readSettings(),
-    navigation: await readSimpleRows("navigation", (r) => ({ id: r.id, label: r.label, path: r.path })),
-    topLinks: await readSimpleRows("top_links", (r) => ({ id: r.id, label: r.label, path: r.path })),
-    heroSlides: await readSimpleRows("hero_slides", (r) => ({
+  const [
+    updatedAt,
+    settings,
+    navigation,
+    topLinks,
+    heroSlides,
+    pages,
+    members,
+    committeeRows,
+    posts,
+    gallery
+  ] = await Promise.all([
+    getMeta("updatedAt", new Date().toISOString()),
+    readSettings(),
+    readSimpleRows("navigation", (r) => ({ id: r.id, label: r.label, path: r.path })),
+    readSimpleRows("top_links", (r) => ({ id: r.id, label: r.label, path: r.path })),
+    readSimpleRows("hero_slides", (r) => ({
       id: r.id,
       image: r.image,
       eyebrow: r.eyebrow,
       title: r.title
     })),
-    pages: await readSimpleRows("pages", (r) => ({
+    readSimpleRows("pages", (r) => ({
       id: r.id,
       key: r.page_key,
       path: r.path,
@@ -378,7 +377,43 @@ async function readSite(includePrivate = false) {
       filter: r.filter,
       body: fromJson(r.body_json, [])
     })),
-    committee: await readSimpleRows("committee", (r) => ({
+    readSimpleRows("members", (r) => ({
+      id: r.id,
+      name: r.name,
+      email: r.email,
+      phone: r.phone,
+      address: r.address,
+      batch: r.batch,
+      type: r.type,
+      image: r.image
+    })),
+    readSimpleRows("committee", (r) => r),
+    readSimpleRows("posts", (r) => {
+      const slug = r.slug || slugify(r.title, `post-${r.id || Date.now()}`);
+      return {
+        id: r.id,
+        slug,
+        path: r.path || normalizePath(slug),
+        title: r.title,
+        category: r.type,
+        date: r.date,
+        image: r.image,
+        excerpt: r.excerpt,
+        body: fromJson(r.body_json, [])
+      };
+    }),
+    readSimpleRows("gallery", (r) => ({ id: r.id, title: r.title, image: r.image }))
+  ]);
+  const membersById = new Map(members.map((member) => [String(member.id), member]));
+
+  const site = {
+    updatedAt,
+    settings,
+    navigation,
+    topLinks,
+    heroSlides,
+    pages,
+    committee: committeeRows.map((r) => ({
       id: r.id,
       memberId: r.member_id || "",
       name: membersById.get(String(r.member_id || ""))?.name || r.name || "",
@@ -393,27 +428,18 @@ async function readSite(includePrivate = false) {
       image: membersById.get(String(r.member_id || ""))?.image || r.image || "/assets/forum-logo.png"
     })),
     members,
-    posts: await readSimpleRows("posts", (r) => {
-      const slug = r.slug || slugify(r.title, `post-${r.id || Date.now()}`);
-      return {
-        id: r.id,
-        slug,
-        path: r.path || normalizePath(slug),
-        title: r.title,
-        category: r.type,
-        date: r.date,
-        image: r.image,
-        excerpt: r.excerpt,
-        body: fromJson(r.body_json, [])
-      };
-    }),
-    gallery: await readSimpleRows("gallery", (r) => ({ id: r.id, title: r.title, image: r.image })),
-    forumPosts: await getForumPosts()
+    posts,
+    gallery,
+    forumPosts: []
   };
 
   if (includePrivate) {
-    site.applications = await readSubmissions("applications");
-    site.messages = await readSubmissions("messages");
+    const [applications, messages] = await Promise.all([
+      readSubmissions("applications"),
+      readSubmissions("messages")
+    ]);
+    site.applications = applications;
+    site.messages = messages;
   }
 
   ensureDefaultContent(site);
