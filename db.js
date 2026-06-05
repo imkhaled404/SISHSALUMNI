@@ -1337,20 +1337,25 @@ async function getForumAuthorMap(userIds) {
   return authors;
 }
 
-async function getForumPosts(userId = "") {
+async function getForumPosts(userId = "", options = {}) {
+  const limit = Math.min(Math.max(Number(options.limit || 20), 1), 50);
   if (isSupabase) {
-    const postsResult = await supabase.from("forum_posts").select("*").order("created_at", { ascending: false });
+    const postsResult = await supabase.from("forum_posts").select("*").order("created_at", { ascending: false }).limit(limit);
     if (postsResult.error) {
       if (isMissingTable(postsResult.error)) return [];
       throw new Error(`read forum posts: ${postsResult.error.message}`);
     }
 
-    const commentsResult = await supabase.from("forum_comments").select("*").order("created_at", { ascending: true });
+    const posts = postsResult.data || [];
+    if (!posts.length) return [];
+
+    const postIds = posts.map((post) => post.id);
+    const commentsResult = await supabase.from("forum_comments").select("*").in("post_id", postIds).order("created_at", { ascending: true });
     if (commentsResult.error && !isMissingTable(commentsResult.error)) {
       throw new Error(`read forum comments: ${commentsResult.error.message}`);
     }
 
-    const likesResult = await supabase.from("forum_likes").select("*");
+    const likesResult = await supabase.from("forum_likes").select("*").in("post_id", postIds);
     if (likesResult.error && !isMissingTable(likesResult.error)) {
       throw new Error(`read forum likes: ${likesResult.error.message}`);
     }
@@ -1360,12 +1365,15 @@ async function getForumPosts(userId = "") {
       ...(commentsResult.data || []).map((comment) => comment.user_id)
     ];
     const authors = await getForumAuthorMap(authorIds);
-    return mapForumRows(postsResult.data || [], commentsResult.data || [], likesResult.data || [], userId, authors);
+    return mapForumRows(posts, commentsResult.data || [], likesResult.data || [], userId, authors);
   }
 
-  const posts = (await querySQLite("SELECT * FROM forum_posts ORDER BY created_at DESC")).rows;
-  const comments = (await querySQLite("SELECT * FROM forum_comments ORDER BY created_at ASC")).rows;
-  const likes = (await querySQLite("SELECT * FROM forum_likes")).rows;
+  const posts = (await querySQLite("SELECT * FROM forum_posts ORDER BY created_at DESC LIMIT ?", [limit])).rows;
+  if (!posts.length) return [];
+  const placeholders = posts.map(() => "?").join(",");
+  const postIds = posts.map((post) => post.id);
+  const comments = (await querySQLite(`SELECT * FROM forum_comments WHERE post_id IN (${placeholders}) ORDER BY created_at ASC`, postIds)).rows;
+  const likes = (await querySQLite(`SELECT * FROM forum_likes WHERE post_id IN (${placeholders})`, postIds)).rows;
   const authors = await getForumAuthorMap([...posts.map((post) => post.user_id), ...comments.map((comment) => comment.user_id)]);
   return mapForumRows(posts, comments, likes, userId, authors);
 }

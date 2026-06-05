@@ -141,6 +141,12 @@ function requireAuth(req, res) {
   return false;
 }
 
+function requirePasswordReady(session, res) {
+  if (!session.user.must_change_password) return true;
+  sendJson(res, 403, { error: "Please change your password before continuing" });
+  return false;
+}
+
 function createSession(user) {
   const token = crypto.randomBytes(32).toString("hex");
   sessions.set(token, {
@@ -158,6 +164,7 @@ async function publicUserPayload(user) {
     phone: member?.phone || "",
     memberId: user.member_id || null,
     isAdmin: !!user.is_admin,
+    mustChangePassword: !!user.must_change_password,
     member: member ? {
       id: member.id,
       name: member.name || "",
@@ -500,14 +507,55 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/auth/change-password") {
+    const session = requireAuth(req, res);
+    if (!session) return;
+    const body = await readBody(req);
+    const newPassword = String(body.newPassword || "");
+    const confirmPassword = String(body.confirmPassword || body.newPassword || "");
+    if (newPassword.length < 6) {
+      sendJson(res, 400, { error: "Password must be at least 6 characters" });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      sendJson(res, 400, { error: "Passwords do not match" });
+      return;
+    }
+    await updateUserPassword(session.user.id, newPassword);
+    session.user.must_change_password = 0;
+    sendJson(res, 200, { ok: true, user: await publicUserPayload(session.user) });
+    return;
+  }
+
   if (req.method === "PUT" && url.pathname === "/api/auth/me") {
     const session = requireAuth(req, res);
     if (!session) return;
+    if (!requirePasswordReady(session, res)) return;
     if (!session.user.member_id) {
       sendJson(res, 400, { error: "This login is not linked to a member profile" });
       return;
     }
     const body = await readBody(req);
+    const memberImageBase64 = body.memberImageBase64 || body.memberImageFileBase64;
+    const memberImageName = body.memberImageName || body.memberImageFileName || "member-image.png";
+    if (memberImageBase64) {
+      const uploaded = await saveAssetImage({
+        filename: memberImageName,
+        base64: memberImageBase64,
+        subdir: "members",
+        maxBytes: 2 * 1024 * 1024,
+        allowedExts: memberImageUploadExts
+      });
+      if (uploaded.error) {
+        sendJson(res, 400, uploaded);
+        return;
+      }
+      body.image = uploaded.path;
+      delete body.memberImageBase64;
+      delete body.memberImageName;
+      delete body.memberImageFileBase64;
+      delete body.memberImageFileName;
+    }
     const accountResult = await updateUserAccount(session.user.id, {
       email: body.email
     });
@@ -558,7 +606,8 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/forum") {
     const session = getSession(req);
-    sendJson(res, 200, { posts: await getForumPosts(session?.user?.id || "") });
+    const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 50);
+    sendJson(res, 200, { posts: await getForumPosts(session?.user?.id || "", { limit }) });
     return;
   }
 
@@ -566,6 +615,7 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && forumCommentMatch) {
     const session = requireAuth(req, res);
     if (!session) return;
+    if (!requirePasswordReady(session, res)) return;
     const result = await addForumComment(session.user, forumCommentMatch[1], await readBody(req));
     sendJson(res, result.error ? 400 : 201, result);
     return;
@@ -575,6 +625,7 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && forumLikeMatch) {
     const session = requireAuth(req, res);
     if (!session) return;
+    if (!requirePasswordReady(session, res)) return;
     const result = await toggleForumLike(session.user, forumLikeMatch[1]);
     sendJson(res, result.error ? 400 : 200, result);
     return;
@@ -583,6 +634,7 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/forum/posts") {
     const session = requireAuth(req, res);
     if (!session) return;
+    if (!requirePasswordReady(session, res)) return;
     const result = await createForumPost(session.user, await readBody(req));
     sendJson(res, result.error ? 400 : 201, result);
     return;

@@ -844,6 +844,45 @@ select {
   margin-bottom: 28px;
 }
 
+.member-detail-card .profile-contact-item {
+  overflow-wrap: anywhere;
+}
+
+.member-detail-card .member-profile-actions {
+  width: 100%;
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.member-detail-card .member-profile-actions .plain-button {
+  width: 100%;
+}
+
+.member-detail-card .member-profile-form {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.member-detail-card .member-edit-box {
+  background: #fff;
+  border-color: var(--line);
+  border-left-color: var(--green);
+}
+
+.profile-upload-field small {
+  color: var(--muted);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.profile-upload-field .member-photo-preview {
+  margin-top: 8px;
+}
+
 /* ============================================================
    QUOTE BAND
    ============================================================ */
@@ -1491,6 +1530,110 @@ select:focus {
   margin-top: 18px;
 }
 
+.member-area-section {
+  background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
+}
+
+.member-dashboard {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.78fr) minmax(0, 1.35fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.member-profile-card,
+.member-profile-form {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: var(--shadow-sm);
+}
+
+.member-profile-card {
+  position: sticky;
+  top: 104px;
+  display: grid;
+  gap: 16px;
+  justify-items: center;
+  padding: 26px;
+  text-align: center;
+}
+
+.member-profile-photo {
+  width: 132px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  padding: 6px;
+  background: var(--green-pale);
+  border: 1px solid rgba(27, 67, 50, 0.16);
+}
+
+.member-profile-photo img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  border-radius: inherit;
+}
+
+.member-profile-card h2 {
+  color: var(--green);
+  font-size: 24px;
+  line-height: 1.25;
+}
+
+.member-profile-list {
+  width: 100%;
+  display: grid;
+  gap: 10px;
+  text-align: left;
+}
+
+.member-profile-list div {
+  padding: 12px;
+  border: 1px solid #e8edf3;
+  background: #f8fafc;
+  border-radius: 8px;
+}
+
+.member-profile-list span,
+.member-form-head p,
+.forum-composer-user span,
+.forum-composer-user small {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.member-profile-list strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.member-profile-actions,
+.member-form-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.member-profile-form {
+  padding: 28px;
+}
+
+.member-form-head {
+  margin-bottom: 4px;
+}
+
+.member-form-head h2 {
+  color: var(--green);
+  font-size: 26px;
+}
+
 .auth-panel,
 .forum-composer,
 .forum-auth,
@@ -1505,6 +1648,17 @@ select:focus {
 .auth-panel,
 .forum-composer {
   padding: 24px;
+}
+
+.password-change-card {
+  max-width: 560px;
+  margin: 0 auto;
+  display: grid;
+  gap: 14px;
+}
+
+.password-change-card .plain-button {
+  width: fit-content;
 }
 
 .auth-panel h3,
@@ -1574,10 +1728,10 @@ select:focus {
   background: var(--soft);
 }
 
-.forum-layout {
+.forum-page-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.8fr);
-  gap: 24px;
+  max-width: 980px;
+  gap: 18px;
   align-items: start;
 }
 
@@ -1599,13 +1753,62 @@ select:focus {
 }
 
 .forum-composer {
-  position: sticky;
-  top: 104px;
+  position: static;
 }
 
-.forum-join-card {
-  position: sticky;
-  top: 104px;
+.forum-composer-card {
+  overflow: hidden;
+}
+
+.forum-composer-user {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.forum-composer-user img {
+  width: 48px;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 50%;
+  background: var(--green-pale);
+}
+
+.forum-composer-user strong {
+  display: block;
+  color: var(--green);
+  overflow-wrap: anywhere;
+}
+
+.forum-title-input,
+.forum-body-input {
+  display: grid;
+  gap: 6px;
+}
+
+.forum-title-input input {
+  min-height: 48px;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.forum-body-input textarea {
+  min-height: 150px;
+}
+
+.forum-compose-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  justify-content: space-between;
+}
+
+.forum-compose-actions label {
+  min-width: 180px;
 }
 
 .forum-composer-head,
@@ -2639,13 +2842,13 @@ select:focus {
 
   .admin-dashboard-hero,
   .career-layout,
-  .forum-layout {
+  .member-dashboard {
     grid-template-columns: 1fr;
   }
 
   .career-intro,
-  .forum-composer,
-  .forum-join-card {
+  .member-profile-card,
+  .forum-composer {
     position: static;
   }
 
@@ -2697,11 +2900,26 @@ select:focus {
   }
 
   .forum-composer-head,
+  .forum-composer-user,
+  .forum-compose-actions,
   .forum-feed-head,
   .forum-card-head,
   .career-card {
     display: grid;
     justify-items: start;
+  }
+
+  .forum-composer-user {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+
+  .forum-composer-user .plain-button {
+    grid-column: 1 / -1;
+  }
+
+  .forum-compose-actions label,
+  .forum-compose-actions .skew-button {
+    width: 100%;
   }
 
   .comment-form {
@@ -3109,6 +3327,8 @@ select:focus {
   }
 
   .account-card,
+  .member-profile-card,
+  .member-profile-form,
   .auth-panel,
   .forum-composer,
   .forum-auth,

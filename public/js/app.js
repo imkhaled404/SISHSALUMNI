@@ -131,7 +131,7 @@
   }
 
   async function refreshForum() {
-    const result = await api("/api/forum");
+    const result = await api("/api/forum?limit=20");
     state.data.forumPosts = result.posts || [];
   }
 
@@ -724,10 +724,30 @@
     `;
   }
 
+  function passwordChangePage(page = {}) {
+    return `
+      ${pageHero({ ...page, title: "পাসওয়ার্ড পরিবর্তন" })}
+      <section class="content-section member-area-section">
+        <div class="container account-layout">
+          <form class="site-form auth-panel password-change-card" data-member-password-form>
+            <span class="eyebrow">First login</span>
+            <h3>নতুন পাসওয়ার্ড সেট করুন</h3>
+            <p>নিরাপত্তার জন্য প্রথম লগইনের পরে পাসওয়ার্ড পরিবর্তন বাধ্যতামূলক। তারপর প্রোফাইল ও ফোরাম ব্যবহার করতে পারবেন।</p>
+            <label>নতুন পাসওয়ার্ড<input name="newPassword" type="password" minlength="6" required></label>
+            <label>পাসওয়ার্ড নিশ্চিত করুন<input name="confirmPassword" type="password" minlength="6" required></label>
+            <button class="skew-button" type="submit">পাসওয়ার্ড আপডেট করুন</button>
+            <button class="plain-button" data-member-logout type="button">লগআউট</button>
+            <p class="form-status" aria-live="polite"></p>
+          </form>
+        </div>
+      </section>
+    `;
+  }
+
   function forumComposer() {
     if (!state.authUser) {
       return `
-        <div class="forum-auth forum-join-card">
+        <div class="forum-auth forum-join-card forum-composer-card">
           <div>
             <span class="eyebrow">Member only</span>
             <h2>আপনার পোস্ট লিখুন</h2>
@@ -738,19 +758,44 @@
       `;
     }
 
-    return `
-      <form class="site-form forum-composer" data-forum-post>
-        <div class="forum-composer-head">
+    if (state.authUser.mustChangePassword) {
+      return `
+        <div class="forum-auth forum-join-card forum-composer-card">
           <div>
-            <span class="eyebrow">Community post</span>
-            <h2>আপনার লেখা প্রকাশ করুন</h2>
-            <p>${escapeHtml(state.authUser.email)} হিসেবে লগইন করা আছে।</p>
+            <span class="eyebrow">Password required</span>
+            <h2>প্রথমে পাসওয়ার্ড পরিবর্তন করুন</h2>
+            <p>ফোরামে পোস্ট, লাইক বা মন্তব্য করার আগে আপনার নতুন পাসওয়ার্ড সেট করতে হবে।</p>
+          </div>
+          <a class="skew-button" href="/login/">পাসওয়ার্ড পরিবর্তন করুন</a>
+        </div>
+      `;
+    }
+
+    const member = state.authUser.member || {};
+    const displayName = member.name || state.authUser.email || "Member";
+    const photo = member.image || "/assets/forum-logo.png";
+    return `
+      <form class="site-form forum-composer forum-composer-card" data-forum-post>
+        <div class="forum-composer-user">
+          <img src="${escapeHtml(photo)}" alt="${escapeHtml(displayName)}" onerror="this.src='/assets/forum-logo.png'">
+          <div>
+            <span>Posting as</span>
+            <strong>${escapeHtml(displayName)}</strong>
+            <small>${escapeHtml(state.authUser.email || "")}</small>
           </div>
           <button class="plain-button" data-member-logout type="button">লগআউট</button>
         </div>
-        <div class="form-grid">
-          <label>শিরোনাম<input name="title" type="text" required></label>
-          <label>ধরণ
+        <label class="forum-title-input">
+          <span>শিরোনাম</span>
+          <input name="title" type="text" placeholder="আপনার আলোচনার শিরোনাম লিখুন" required>
+        </label>
+        <label class="forum-body-input">
+          <span>লেখা</span>
+          <textarea name="body" placeholder="ধারণা, প্রশ্ন, শিক্ষা বিষয়ক লেখা বা স্মৃতি লিখুন..." required></textarea>
+        </label>
+        <div class="forum-compose-actions">
+          <label>
+            <span>ধরণ</span>
             <select name="category">
               <option>Idea</option>
               <option>Education</option>
@@ -759,9 +804,8 @@
               <option>Memory</option>
             </select>
           </label>
-          <label class="wide-field">লেখা<textarea name="body" required></textarea></label>
+          <button class="skew-button" type="submit">পোস্ট করুন</button>
         </div>
-        <button class="skew-button" type="submit">পোস্ট করুন</button>
         <p class="form-status" aria-live="polite"></p>
       </form>
     `;
@@ -817,7 +861,8 @@
       ${pageHero(page)}
       ${loginPrompt()}
       <section class="content-section forum-section">
-        <div class="container forum-layout">
+        <div class="container forum-page-layout">
+          ${forumComposer()}
           <div class="forum-feed">
             <div class="forum-feed-head">
               <div>
@@ -828,9 +873,6 @@
             </div>
             ${posts.length ? posts.map(forumPostCard).join("") : `<div class="empty-state">এখনো কোনো ফোরাম পোস্ট নেই। প্রথম পোস্টটি লিখুন।</div>`}
           </div>
-          <aside class="forum-sidebar">
-            ${forumComposer()}
-          </aside>
         </div>
       </section>
     `;
@@ -997,6 +1039,8 @@
 
   /* ── Restricted Page ─────────────────────────────────────── */
   function restrictedPage(page) {
+    if (state.authUser?.mustChangePassword) return passwordChangePage(page);
+    if (state.authUser) return memberProfilePage(page);
     return `
       ${pageHero(page)}
       <section class="content-section">
@@ -1008,35 +1052,88 @@
     `;
   }
 
+  function memberProfilePage(page) {
+    const user = state.authUser;
+    const member = user?.member || {};
+    const photo = member.image || "/assets/forum-logo.png";
+    const displayName = member.name || user?.email || "Member";
+    return `
+      ${pageHero(page)}
+      <section class="profile-page member-area-section">
+        <div class="container">
+          <div class="profile-card member-detail-card">
+            <div class="profile-photo-col">
+              <img src="${escapeHtml(photo)}"
+                   alt="${escapeHtml(displayName)}"
+                   onerror="this.src='/assets/forum-logo.png'">
+              <div class="profile-name">${escapeHtml(displayName)}</div>
+              <div class="profile-role">${escapeHtml(member.type || "সদস্য")}</div>
+              <span class="profile-year-badge">${member.batch ? `ব্যাচ ${escapeHtml(member.batch)}` : "সদস্য প্রোফাইল"}</span>
+              <div class="profile-contact">
+                ${(member.email || user?.email) ? `<div class="profile-contact-item">ই-মেইল: ${escapeHtml(member.email || user?.email || "")}</div>` : ""}
+                ${(member.phone || user?.phone) ? `<div class="profile-contact-item">ফোন: ${escapeHtml(member.phone || user?.phone || "")}</div>` : ""}
+                ${member.address ? `<div class="profile-contact-item">ঠিকানা: ${escapeHtml(member.address)}</div>` : ""}
+              </div>
+              <div class="member-profile-actions">
+                <a class="plain-button primary" href="/forum/">ফোরামে যান</a>
+                <button class="plain-button" data-member-logout type="button">লগআউট</button>
+              </div>
+            </div>
+            <div class="profile-body-col member-profile-body">
+              <h2>আমার প্রোফাইল</h2>
+              <p><strong>নাম:</strong> ${escapeHtml(displayName)}</p>
+              ${(member.email || user?.email) ? `<p><strong>ই-মেইল:</strong> ${escapeHtml(member.email || user?.email || "")}</p>` : ""}
+              ${(member.phone || user?.phone) ? `<p><strong>ফোন:</strong> ${escapeHtml(member.phone || user?.phone || "")}</p>` : ""}
+              ${member.batch ? `<p><strong>ব্যাচ:</strong> ${escapeHtml(member.batch)}</p>` : ""}
+              ${member.type ? `<p><strong>সদস্য ধরন:</strong> ${escapeHtml(member.type)}</p>` : ""}
+              <div class="profile-message-box member-edit-box">
+                <h3>তথ্য আপডেট করুন</h3>
+                <form class="site-form member-profile-form" data-profile-form>
+                  <div class="form-grid">
+                    <label>নাম<input name="name" type="text" value="${escapeHtml(member.name || "")}" required></label>
+                    <label>ই-মেইল<input name="email" type="email" value="${escapeHtml(member.email || user?.email || "")}" required></label>
+                    <label>ফোন<input name="phone" type="text" value="${escapeHtml(member.phone || user?.phone || "")}"></label>
+                    <label>ব্যাচ<input name="batch" type="text" value="${escapeHtml(member.batch || "")}"></label>
+                    <label>ধরণ<input name="type" type="text" value="${escapeHtml(member.type || "")}"></label>
+                    <label>ছবি পথ<input name="image" type="text" value="${escapeHtml(member.image || "")}" placeholder="/assets/members/name.jpg"></label>
+                    <label class="wide-field member-photo-field profile-upload-field">প্রোফাইল ছবি আপলোড
+                      <input name="memberImage" type="file" accept="image/jpeg,image/png,image/webp,image/gif" data-member-image-input>
+                      <small>JPG, PNG, WebP বা GIF ছবি দিন। সর্বোচ্চ 2MB।</small>
+                      <img class="member-photo-preview" data-member-image-preview alt="" hidden>
+                    </label>
+                    <label class="wide-field">ঠিকানা<input name="address" type="text" value="${escapeHtml(member.address || "")}"></label>
+                  </div>
+                  <div class="account-actions">
+                    <button class="skew-button" type="submit">তথ্য আপডেট করুন</button>
+                    <a class="plain-button" href="/forum/">ফোরামে যান</a>
+                  </div>
+                  <p class="form-status" aria-live="polite"></p>
+                </form>
+              </div>
+              <div class="profile-message-box">
+                <h3>সদস্য এলাকা</h3>
+                <p>
+                  এখানে আপনার সদস্য প্রোফাইল, যোগাযোগের তথ্য এবং ফোরাম কার্যক্রমের জন্য ব্যবহারযোগ্য অ্যাকাউন্ট তথ্য রাখা হয়েছে।
+                  ছবি আপডেট করলে সেটি সদস্য তালিকা ও কমিটি প্রোফাইলেও দেখা যাবে।
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
   /* ── Account / Login Page ────────────────────────────────── */
   function accountPage(page) {
     const user = state.authUser;
-    const member = user?.member || {};
+    if (user?.mustChangePassword) return passwordChangePage(page);
+    if (user) return memberProfilePage(page);
     return `
       ${pageHero(page)}
       <section class="content-section">
         <div class="container account-layout">
-          ${user ? `
-            <form class="site-form account-card" data-profile-form>
-              <span class="eyebrow">Logged in</span>
-              <h2>আমার তথ্য</h2>
-              <div class="form-grid">
-                <label>নাম<input name="name" type="text" value="${escapeHtml(member.name || "")}" required></label>
-                <label>ই-মেইল<input name="email" type="email" value="${escapeHtml(member.email || user.email || "")}" required></label>
-                <label>ফোন<input name="phone" type="text" value="${escapeHtml(member.phone || user.phone || "")}"></label>
-                <label>ব্যাচ<input name="batch" type="text" value="${escapeHtml(member.batch || "")}"></label>
-                <label>ধরণ<input name="type" type="text" value="${escapeHtml(member.type || "")}"></label>
-                <label>ছবি পথ<input name="image" type="text" value="${escapeHtml(member.image || "")}"></label>
-                <label class="wide-field">ঠিকানা<input name="address" type="text" value="${escapeHtml(member.address || "")}"></label>
-              </div>
-              <div class="account-actions">
-                <button class="skew-button" type="submit">তথ্য আপডেট করুন</button>
-                <a class="skew-button" href="/forum/">ফোরামে যান</a>
-                <button class="plain-button" data-member-logout type="button">লগআউট</button>
-              </div>
-              <p class="form-status" aria-live="polite"></p>
-            </form>
-          ` : loginForm({ note: "সদস্য অ্যাকাউন্ট থাকলে লগইন করুন। নতুন অ্যাকাউন্ট অ্যাডমিন প্যানেল থেকে তৈরি হবে।" })}
+          ${loginForm({ note: "সদস্য অ্যাকাউন্ট থাকলে লগইন করুন। নতুন অ্যাকাউন্ট অ্যাডমিন প্যানেল থেকে তৈরি হবে।" })}
         </div>
       </section>
     `;
@@ -1159,6 +1256,13 @@
     });
     setAuth(result.token, result.user);
     await loadAuth();
+    if (state.authUser?.mustChangePassword) {
+      if (normalizePath(window.location.pathname) !== "/login/") {
+        history.pushState({}, "", "/login/");
+      }
+      renderPage({ preserveScroll: true });
+      return;
+    }
     if (normalizePath(window.location.pathname) === "/forum/") {
       await refreshForum().catch(() => {});
     }
@@ -1182,6 +1286,19 @@
     if (note) note.textContent = message;
     const email = modal.querySelector("input[name='email']");
     if (email) email.focus();
+  }
+
+  function showPasswordChangePrompt() {
+    if (normalizePath(window.location.pathname) !== "/login/") {
+      history.pushState({}, "", "/login/");
+    }
+    renderPage({ preserveScroll: true });
+  }
+
+  function needsPasswordChange() {
+    if (!state.authUser?.mustChangePassword) return false;
+    showPasswordChangePrompt();
+    return true;
   }
 
   /* ── Event Binding ───────────────────────────────────────── */
@@ -1339,6 +1456,34 @@
       });
     });
 
+    app.querySelectorAll("form[data-member-password-form]").forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const status = form.querySelector(".form-status");
+        const payload = Object.fromEntries(new FormData(form).entries());
+        if (payload.newPassword !== payload.confirmPassword) {
+          status.textContent = "পাসওয়ার্ড মিলছে না।";
+          return;
+        }
+        if (String(payload.newPassword || "").length < 6) {
+          status.textContent = "পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।";
+          return;
+        }
+        status.textContent = "পাসওয়ার্ড আপডেট হচ্ছে...";
+        try {
+          const result = await api("/api/auth/change-password", {
+            method: "POST",
+            body: JSON.stringify(payload)
+          });
+          state.authUser = result.user;
+          status.textContent = "পাসওয়ার্ড আপডেট হয়েছে।";
+          renderPage({ preserveScroll: true });
+        } catch (error) {
+          status.textContent = error.message || "পাসওয়ার্ড আপডেট করা যায়নি।";
+        }
+      });
+    });
+
     app.querySelectorAll("[data-close-login]").forEach((button) => {
       button.addEventListener("click", () => {
         const modal = button.closest("[data-login-modal]");
@@ -1358,10 +1503,15 @@
         const status = form.querySelector(".form-status");
         status.textContent = "আপডেট হচ্ছে...";
         try {
-          const payload = Object.fromEntries(new FormData(form).entries());
+          const payload = await formPayload(form);
           const result = await api("/api/auth/me", { method: "PUT", body: JSON.stringify(payload) });
           state.authUser = result.user;
+          if (result.user?.member) {
+            const memberIndex = (state.data.members || []).findIndex((item) => String(item.id) === String(result.user.member.id));
+            if (memberIndex >= 0) state.data.members[memberIndex] = result.user.member;
+          }
           status.textContent = "তথ্য আপডেট হয়েছে।";
+          renderPage({ preserveScroll: true });
         } catch (error) {
           status.textContent = error.message || "তথ্য আপডেট করা যায়নি।";
         }
@@ -1375,6 +1525,7 @@
           showLoginPrompt("পোস্ট করতে সদস্য লগইন করুন।");
           return;
         }
+        if (needsPasswordChange()) return;
         const status = form.querySelector(".form-status");
         status.textContent = "পোস্ট প্রকাশ হচ্ছে...";
         try {
@@ -1395,6 +1546,7 @@
           showLoginPrompt("মন্তব্য করতে সদস্য লগইন করুন।");
           return;
         }
+        if (needsPasswordChange()) return;
         try {
           const payload = Object.fromEntries(new FormData(form).entries());
           await api(`/api/forum/posts/${encodeURIComponent(form.dataset.forumComment)}/comments`, {
@@ -1415,6 +1567,7 @@
           showLoginPrompt("লাইক দিতে সদস্য লগইন করুন।");
           return;
         }
+        if (needsPasswordChange()) return;
         try {
           await api(`/api/forum/posts/${encodeURIComponent(button.dataset.forumLike)}/like`, { method: "POST" });
           await refreshForumAndRender();
@@ -1430,6 +1583,7 @@
           showLoginPrompt("মন্তব্য করতে সদস্য লগইন করুন।");
           return;
         }
+        if (needsPasswordChange()) return;
         const form = app.querySelector(`form[data-forum-comment="${CSS.escape(button.dataset.commentToggle)}"]`);
         form?.querySelector("input")?.focus();
       });
