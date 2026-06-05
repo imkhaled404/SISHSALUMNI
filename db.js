@@ -35,9 +35,11 @@ const EDITABLE_TABLES = [
 ];
 
 const OPTIONAL_COLUMNS = {
+  committee: ["member_id"],
   posts: ["slug", "path"],
   applications: ["payload_json"],
-  messages: ["payload_json"]
+  messages: ["payload_json"],
+  users: ["phone"]
 };
 
 function isMissingTable(error) {
@@ -90,6 +92,66 @@ function slugify(value, fallback = "item") {
   return ascii || `${fallback}-${Date.now()}`;
 }
 
+function normalizedEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function asciiDigits(value) {
+  return String(value || "").replace(/[\u09E6-\u09EF\u06F0-\u06F9\u0660-\u0669]/g, (digit) => {
+    const code = digit.charCodeAt(0);
+    if (code >= 0x09E6 && code <= 0x09EF) return String(code - 0x09E6);
+    if (code >= 0x06F0 && code <= 0x06F9) return String(code - 0x06F0);
+    if (code >= 0x0660 && code <= 0x0669) return String(code - 0x0660);
+    return digit;
+  });
+}
+
+function normalizedPhoneKey(value) {
+  return asciiDigits(value).replace(/[^\d]/g, "");
+}
+
+function isUsableEmail(value) {
+  const email = normalizedEmail(value);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email !== "n/a";
+}
+
+function placeholderEmailForMember(member, prefix = "member") {
+  const stableId = String(member?.id || "").replace(/[^\w-]/g, "");
+  const stable = stableId || normalizedPhoneKey(member?.phone);
+  if (stable) return `${prefix}-${stable}@members.local`;
+  const hash = crypto.createHash("sha1").update(JSON.stringify(member || {})).digest("hex").slice(0, 12);
+  return `${prefix}-${hash}@members.local`;
+}
+
+function loginEmailForMember(member) {
+  return isUsableEmail(member?.email) ? normalizedEmail(member.email) : placeholderEmailForMember(member);
+}
+
+function isKhaledMember(member) {
+  const haystack = `${member?.name || ""} ${member?.email || ""}`.toLowerCase();
+  return haystack.includes("khaled") || haystack.includes("\u0996\u09be\u09b2\u09c7\u09a6");
+}
+
+function normalizedPhone(value) {
+  return String(value || "").replace(/[^\d০-৯]/g, "");
+}
+
+function findPayloadMember(data, memberId) {
+  const id = String(memberId || "");
+  if (!id) return null;
+  return (data.members || []).find((member) => String(member.id || "") === id) || null;
+}
+
+function committeeFallback(person, member) {
+  return {
+    name: member?.name || person.name || "Committee member",
+    email: normalizedEmail(member?.email || person.email || ""),
+    phone: member?.phone || person.phone || "",
+    image: member?.image || person.image || "/assets/forum-logo.png",
+    passingYear: person.passingYear || member?.batch || ""
+  };
+}
+
 function assertSupabase(result, action) {
   if (result.error) {
     throw new Error(`${action}: ${result.error.message}`);
@@ -99,6 +161,33 @@ function assertSupabase(result, action) {
 
 function isMissingColumn(error) {
   return /column .* does not exist|Could not find .* column|schema cache/i.test(error.message || "");
+}
+
+function isTransientSupabaseError(error) {
+  const cause = error?.cause ? `${error.cause.code || ""} ${error.cause.message || ""}` : "";
+  return /fetch failed|network|timeout|timed out|ECONNRESET|ETIMEDOUT|UND_ERR/i.test(`${error?.message || ""} ${cause}`);
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function retryTransient(action, actionName, attempts = 4) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const result = await action();
+      if (result?.error && isTransientSupabaseError(result.error)) {
+        throw result.error;
+      }
+      return result;
+    } catch (error) {
+      lastError = error;
+      if (!isTransientSupabaseError(error) || attempt === attempts) break;
+      await wait(350 * attempt);
+    }
+  }
+  throw new Error(`${actionName}: ${lastError?.message || lastError}`);
 }
 
 async function insertSupabase(table, row, action = `insert ${table}`) {
@@ -241,6 +330,18 @@ function ensureDefaultContent(site) {
 }
 
 async function readSite(includePrivate = false) {
+  const members = await readSimpleRows("members", (r) => ({
+    id: r.id,
+    name: r.name,
+    email: r.email,
+    phone: r.phone,
+    address: r.address,
+    batch: r.batch,
+    type: r.type,
+    image: r.image
+  }));
+  const membersById = new Map(members.map((member) => [String(member.id), member]));
+
   const site = {
     updatedAt: await getMeta("updatedAt", new Date().toISOString()),
     settings: await readSettings(),
@@ -267,25 +368,19 @@ async function readSite(includePrivate = false) {
     })),
     committee: await readSimpleRows("committee", (r) => ({
       id: r.id,
-      name: r.name,
+      memberId: r.member_id || "",
+      name: membersById.get(String(r.member_id || ""))?.name || r.name || "",
+      email: membersById.get(String(r.member_id || ""))?.email || r.email || "",
       role: r.role,
       year: r.year,
-      passingYear: r.passing_year,
+      passingYear: r.passing_year || membersById.get(String(r.member_id || ""))?.batch || "",
       biography: r.biography,
       message: r.message,
-      phone: r.phone,
-      image: r.image
+      phone: membersById.get(String(r.member_id || ""))?.phone || r.phone || "",
+      address: membersById.get(String(r.member_id || ""))?.address || "",
+      image: membersById.get(String(r.member_id || ""))?.image || r.image || "/assets/forum-logo.png"
     })),
-    members: await readSimpleRows("members", (r) => ({
-      id: r.id,
-      name: r.name,
-      email: r.email,
-      phone: r.phone,
-      address: r.address,
-      batch: r.batch,
-      type: r.type,
-      image: r.image
-    })),
+    members,
     posts: await readSimpleRows("posts", (r) => {
       const slug = r.slug || slugify(r.title, `post-${r.id || Date.now()}`);
       return {
@@ -373,7 +468,7 @@ async function getAllMembersWithUsers() {
         member_id: member.id,
         name: member.name,
         email: user?.email || member.email,
-        phone: user?.phone || member.phone,
+        phone: member.phone || "",
         type: member.type,
         batch: member.batch,
         user_id: user?.id,
@@ -390,7 +485,7 @@ async function getAllMembersWithUsers() {
         member_id: null,
         name: user.email,
         email: user.email,
-        phone: user.phone,
+        phone: user.phone || "",
         type: "User",
         batch: "",
         user_id: user.id,
@@ -405,7 +500,7 @@ async function getAllMembersWithUsers() {
 
   const res = await querySQLite(`
     SELECT m.id as member_id, m.name, COALESCE(u.email, m.email) as email,
-           COALESCE(u.phone, m.phone) as phone, m.type, m.batch,
+           m.phone as phone, m.type, m.batch,
            u.id as user_id, u.permissions_json, u.is_admin, u.must_change_password
     FROM members m
     LEFT JOIN users u ON u.member_id = m.id
@@ -450,9 +545,49 @@ async function getUserByMemberId(memberId) {
   return res.rows[0] || null;
 }
 
+async function getMemberByEmail(email) {
+  const finalEmail = normalizedEmail(email);
+  if (!finalEmail) return null;
+  if (isSupabase) {
+    const result = await supabase.from("members").select("*").eq("email", finalEmail).maybeSingle();
+    return assertSupabase(result, "read member by email");
+  }
+  const res = await querySQLite("SELECT * FROM members WHERE lower(email) = lower(?)", [finalEmail]);
+  return res.rows[0] || null;
+}
+
+async function createMember(row) {
+  const member = {
+    name: row.name || "Member",
+    email: normalizedEmail(row.email),
+    phone: row.phone || "",
+    address: row.address || "",
+    batch: row.batch || "",
+    type: row.type || "General",
+    image: row.image || "",
+    sort_order: row.sort_order ?? 9999
+  };
+
+  if (isSupabase) {
+    let result = await supabase.from("members").insert(member).select("id").single();
+    if (result.error && /duplicate key value.*members_pkey|members_pkey/i.test(result.error.message || "")) {
+      const maxResult = await supabase.from("members").select("id").order("id", { ascending: false }).limit(1).maybeSingle();
+      const maxRow = assertSupabase(maxResult, "read max member id");
+      result = await supabase.from("members").insert({ ...member, id: Number(maxRow?.id || 0) + 1 }).select("id").single();
+    }
+    const created = assertSupabase(result, "create member");
+    return { ...member, id: created.id };
+  }
+
+  const result = db.prepare(
+    "INSERT INTO members (name, email, phone, address, batch, type, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(member.name, member.email, member.phone, member.address, member.batch, member.type, member.image, member.sort_order);
+  return { ...member, id: Number(result.lastInsertRowid) };
+}
+
 async function createUserForMember(memberId, email, phone, options = {}) {
   const member = await getMemberById(memberId);
-  const finalEmail = String(email || member?.email || "").trim();
+  const finalEmail = normalizedEmail(email || member?.email || "");
   const finalPhone = String(phone || member?.phone || "").trim();
 
   if (!finalEmail) return { error: "Email is required" };
@@ -476,12 +611,319 @@ async function createUserForMember(memberId, email, phone, options = {}) {
     await insertSupabase("users", row, "create user");
   } else {
     await querySQLite(
-      "INSERT INTO users (id, email, phone, password_hash, permissions_json, is_admin, must_change_password, member_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [row.id, row.email, row.phone, row.password_hash, row.permissions_json, row.is_admin, row.must_change_password, row.member_id]
+      "INSERT INTO users (id, email, password_hash, permissions_json, is_admin, must_change_password, member_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [row.id, row.email, row.password_hash, row.permissions_json, row.is_admin, row.must_change_password, row.member_id]
     );
   }
 
   return { ok: true, id, initialPassword: initialPass };
+}
+
+async function updateUserAccount(userId, data) {
+  const updates = {};
+  if (data.email !== undefined) {
+    const email = normalizedEmail(data.email);
+    if (!email) return { error: "Email is required" };
+    const existing = await getUserByEmail(email);
+    if (existing && String(existing.id) !== String(userId)) return { error: "Email already exists" };
+    updates.email = email;
+  }
+  if (data.phone !== undefined) updates.phone = String(data.phone || "").trim();
+  if (!Object.keys(updates).length) return { ok: true };
+
+  if (isSupabase) {
+    let result = await supabase.from("users").update(updates).eq("id", userId);
+    if (result.error && isMissingColumn(result.error) && updates.phone !== undefined) {
+      const fallback = { ...updates };
+      delete fallback.phone;
+      result = Object.keys(fallback).length
+        ? await supabase.from("users").update(fallback).eq("id", userId)
+        : { data: null, error: null };
+    }
+    assertSupabase(result, "update user account");
+  } else {
+    const user = (await querySQLite("SELECT * FROM users WHERE id = ?", [userId])).rows[0];
+    if (!user) return { error: "User not found" };
+    await querySQLite("UPDATE users SET email = ? WHERE id = ?", [
+      updates.email ?? user.email,
+      userId
+    ]);
+  }
+  return { ok: true };
+}
+
+async function linkUserToMember(userId, memberId, phone = "") {
+  if (!userId || !memberId) return { error: "User and member are required" };
+
+  if (isSupabase) {
+    const updates = { member_id: memberId };
+    if (phone) updates.phone = phone;
+    let result = await supabase.from("users").update(updates).eq("id", userId);
+    if (result.error && isMissingColumn(result.error) && updates.phone !== undefined) {
+      delete updates.phone;
+      result = await supabase.from("users").update(updates).eq("id", userId);
+    }
+    assertSupabase(result, "link user to member");
+    return { ok: true };
+  }
+
+  const user = (await querySQLite("SELECT * FROM users WHERE id = ?", [userId])).rows[0];
+  if (!user) return { error: "User not found" };
+  await querySQLite("UPDATE users SET member_id = ? WHERE id = ?", [
+    memberId,
+    userId
+  ]);
+  return { ok: true };
+}
+
+function memberNameKey(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function findCommitteeMemberMatch(person, members) {
+  const directId = maybeNumber(person.memberId);
+  if (directId) {
+    const direct = members.find((member) => String(member.id) === String(directId));
+    if (direct) return direct;
+  }
+
+  const email = normalizedEmail(person.email);
+  if (isUsableEmail(email)) {
+    const byEmail = members.find((member) => normalizedEmail(member.email) === email);
+    if (byEmail) return byEmail;
+  }
+
+  const phone = normalizedPhoneKey(person.phone);
+  if (phone) {
+    const byPhone = members.find((member) => normalizedPhoneKey(member.phone) === phone);
+    if (byPhone) return byPhone;
+  }
+
+  const name = memberNameKey(person.name);
+  if (!name) return null;
+  const nameMatches = members.filter((member) => memberNameKey(member.name) === name);
+  if (nameMatches.length === 1) return nameMatches[0];
+
+  const batch = normalizedPhoneKey(person.passingYear || person.batch);
+  if (batch && nameMatches.length > 1) {
+    return nameMatches.find((member) => normalizedPhoneKey(member.batch) === batch) || null;
+  }
+
+  return null;
+}
+
+function committeePersonToMember(person, existing = {}) {
+  const realEmail = isUsableEmail(person.email)
+    ? normalizedEmail(person.email)
+    : (isUsableEmail(existing.email) ? normalizedEmail(existing.email) : "");
+
+  return {
+    name: existing.name || person.name || "Member",
+    email: realEmail,
+    phone: person.phone || existing.phone || "",
+    address: existing.address || person.address || "",
+    batch: person.passingYear || existing.batch || "",
+    type: existing.type || "Member",
+    image: existing.image || person.image || "/assets/forum-logo.png",
+    sort_order: existing.sort_order ?? 9999
+  };
+}
+
+async function updateCommitteeMemberLink(committeeId, memberId) {
+  if (!committeeId || !memberId) return { skipped: true };
+
+  if (isSupabase) {
+    let result = await retryTransient(
+      () => supabase.from("committee").update({ member_id: memberId }).eq("id", committeeId),
+      "link committee member"
+    );
+    if (result.error && isMissingColumn(result.error)) return { skipped: true };
+    assertSupabase(result, "link committee member");
+    return { ok: true };
+  }
+
+  await querySQLite(
+    "UPDATE committee SET member_id = ? WHERE id = ?",
+    [memberId, committeeId]
+  );
+  return { ok: true };
+}
+
+async function ensureMemberUser(member) {
+  const admin = isKhaledMember(member);
+  const permissions = admin ? ["edit_any"] : [];
+  let user = await getUserByMemberId(member.id);
+  let linked = false;
+  let created = false;
+  let initialPassword = "";
+
+  if (!user) {
+    let email = loginEmailForMember(member);
+    const existingEmailUser = await getUserByEmail(email);
+    if (existingEmailUser) {
+      if (!existingEmailUser.member_id || String(existingEmailUser.member_id) === String(member.id)) {
+        const linkResult = await linkUserToMember(existingEmailUser.id, member.id, member.phone);
+        if (linkResult.error) return linkResult;
+        user = { ...existingEmailUser, member_id: member.id, phone: member.phone || existingEmailUser.phone };
+        linked = !existingEmailUser.member_id;
+      } else {
+        email = placeholderEmailForMember({ ...member, id: member.id }, "member");
+      }
+    }
+
+    if (!user) {
+      let createdUser;
+      try {
+        createdUser = await createUserForMember(member.id, email, member.phone, {
+          permissions,
+          isAdmin: admin
+        });
+      } catch (error) {
+        if (!isTransientSupabaseError(error)) throw error;
+        user = await getUserByMemberId(member.id);
+        if (!user) {
+          await wait(500);
+          createdUser = await createUserForMember(member.id, email, member.phone, {
+            permissions,
+            isAdmin: admin
+          });
+        }
+      }
+      if (createdUser?.error) return createdUser;
+      if (createdUser?.ok) {
+        created = true;
+        initialPassword = createdUser.initialPassword || "";
+        user = await getUserByMemberId(member.id);
+      }
+    }
+  }
+
+  if (user) {
+    const currentEmail = normalizedEmail(user.email);
+    const realEmail = isUsableEmail(member.email) ? normalizedEmail(member.email) : "";
+    if (realEmail && currentEmail.endsWith("@members.local") && currentEmail !== realEmail) {
+      const updateResult = await retryTransient(
+        () => updateUserAccount(user.id, { email: realEmail, phone: member.phone || user.phone || "" }),
+        "update user account"
+      );
+      if (!updateResult.error) user.email = realEmail;
+    } else if (member.phone && member.phone !== user.phone) {
+      await retryTransient(() => updateUserAccount(user.id, { phone: member.phone }), "update user account");
+    }
+    await retryTransient(() => updateUserPermissions(user.id, permissions, admin), "update user permissions");
+  }
+
+  return {
+    ok: true,
+    userId: user?.id || "",
+    email: user?.email || "",
+    admin,
+    linked,
+    created,
+    initialPassword
+  };
+}
+
+async function syncCommitteeMembersAndUsers() {
+  const result = {
+    committeeChecked: 0,
+    committeeLinked: 0,
+    membersCreated: 0,
+    membersUpdated: 0,
+    usersChecked: 0,
+    usersCreated: 0,
+    usersLinked: 0,
+    khaledAdmins: [],
+    initialPasswords: []
+  };
+
+  const readMembers = () => readSimpleRows("members", (r) => ({
+    id: r.id,
+    name: r.name,
+    email: r.email,
+    phone: r.phone,
+    address: r.address,
+    batch: r.batch,
+    type: r.type,
+    image: r.image,
+    sort_order: r.sort_order
+  }));
+
+  let members = await readMembers();
+  const committee = await readSimpleRows("committee", (r) => ({
+    id: r.id,
+    memberId: r.member_id,
+    name: r.name,
+    email: r.email,
+    role: r.role,
+    year: r.year,
+    passingYear: r.passing_year,
+    biography: r.biography,
+    message: r.message,
+    phone: r.phone,
+    image: r.image,
+    sort_order: r.sort_order
+  }));
+
+  for (const person of committee) {
+    result.committeeChecked += 1;
+    let member = findCommitteeMemberMatch(person, members);
+    const memberData = committeePersonToMember(person, member || {});
+
+    if (!member) {
+      try {
+        member = await createMember(memberData);
+      } catch (error) {
+        if (!isTransientSupabaseError(error)) throw error;
+        members = await readMembers();
+        member = findCommitteeMemberMatch(person, members);
+        if (!member) {
+          await wait(500);
+          member = await createMember(memberData);
+        }
+      }
+      if (!members.some((item) => String(item.id) === String(member.id))) {
+        members.push(member);
+      }
+      result.membersCreated += 1;
+    } else {
+      const nextMember = {
+        ...member,
+        ...memberData,
+        email: isUsableEmail(member.email) ? normalizedEmail(member.email) : memberData.email,
+        image: member.image || memberData.image
+      };
+      await retryTransient(() => updateMemberProfile(member.id, nextMember), "update member profile");
+      member = { ...member, ...nextMember };
+      const index = members.findIndex((item) => String(item.id) === String(member.id));
+      if (index >= 0) members[index] = member;
+      result.membersUpdated += 1;
+    }
+
+    const linkResult = await updateCommitteeMemberLink(person.id, member.id);
+    if (linkResult.ok) result.committeeLinked += 1;
+  }
+
+  members = await readMembers();
+  for (const member of members) {
+    result.usersChecked += 1;
+    const ensured = await ensureMemberUser(member);
+    if (ensured.error) return ensured;
+    if (ensured.created) result.usersCreated += 1;
+    if (ensured.linked) result.usersLinked += 1;
+    if (ensured.admin) result.khaledAdmins.push({ memberId: member.id, userId: ensured.userId, name: member.name });
+    if (ensured.initialPassword) {
+      result.initialPasswords.push({
+        memberId: member.id,
+        userId: ensured.userId,
+        email: ensured.email,
+        initialPassword: ensured.initialPassword
+      });
+    }
+  }
+
+  await setMeta("updatedAt", new Date().toISOString());
+  return { ok: true, ...result };
 }
 
 async function registerMemberUser(body) {
@@ -532,12 +974,13 @@ async function registerMemberUser(body) {
 
 async function resetUserPassword(userId) {
   if (isSupabase) {
-    const result = await supabase.from("users").select("phone").eq("id", userId).maybeSingle();
+    const result = await supabase.from("users").select("*").eq("id", userId).maybeSingle();
     const user = assertSupabase(result, "read user for password reset");
     if (!user) return { error: "Not found" };
+    const member = user.member_id ? await getMemberById(user.member_id) : null;
     assertSupabase(
       await supabase.from("users").update({
-        password_hash: hashPassword(user.phone || "12345678"),
+        password_hash: hashPassword(member?.phone || user.phone || "12345678"),
         must_change_password: 1
       }).eq("id", userId),
       "reset password"
@@ -545,10 +988,11 @@ async function resetUserPassword(userId) {
     return { ok: true };
   }
 
-  const res = await querySQLite("SELECT phone FROM users WHERE id = ?", [userId]);
+  const res = await querySQLite("SELECT * FROM users WHERE id = ?", [userId]);
   if (!res.rows[0]) return { error: "Not found" };
+  const member = res.rows[0].member_id ? await getMemberById(res.rows[0].member_id) : null;
   await querySQLite("UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?", [
-    hashPassword(res.rows[0].phone || "12345678"),
+    hashPassword(member?.phone || res.rows[0].phone || "12345678"),
     userId
   ]);
   return { ok: true };
@@ -683,6 +1127,109 @@ async function updateSubmission(table, id, body) {
   return { ok: true };
 }
 
+async function getSubmissionById(table, id) {
+  if (!["applications", "messages"].includes(table)) return null;
+
+  if (isSupabase) {
+    const result = await supabase.from(table).select("*").eq("id", id).maybeSingle();
+    const row = assertSupabase(result, `read ${table} ${id}`);
+    return row ? {
+      id: row.id,
+      status: row.status,
+      createdAt: row.created_at,
+      ...row,
+      ...fromJson(row.payload_json, {})
+    } : null;
+  }
+
+  const res = await querySQLite(`SELECT * FROM ${table} WHERE id = ?`, [id]);
+  const row = res.rows[0];
+  return row ? {
+    id: row.id,
+    status: row.status,
+    createdAt: row.created_at,
+    ...row,
+    ...fromJson(row.payload_json, {})
+  } : null;
+}
+
+function applicationToMember(application) {
+  return {
+    name: application.nameBn || application.nameEn || application.name || "Member",
+    email: normalizedEmail(application.email),
+    phone: application.mobile || application.phone || "",
+    address: application.currentAddress || application.permanentAddress || application.address || "",
+    batch: application.passingYear || application.batch || application.admissionYear || "",
+    type: application.memberType || application.type || "General",
+    image: ""
+  };
+}
+
+async function approveApplication(id) {
+  const application = await getSubmissionById("applications", id);
+  if (!application) return { error: "Application not found" };
+
+  const memberData = applicationToMember(application);
+  if (!memberData.email || memberData.email === "n/a") return { error: "Application email is required" };
+
+  let member = await getMemberByEmail(memberData.email);
+  let createdMember = false;
+  if (!member) {
+    member = await createMember(memberData);
+    createdMember = true;
+  } else {
+    await updateMemberProfile(member.id, {
+      ...member,
+      ...memberData,
+      image: member.image || memberData.image
+    });
+    member = await getMemberById(member.id);
+  }
+
+  let user = await getUserByMemberId(member.id);
+  const existingEmailUser = await getUserByEmail(memberData.email);
+  let createdUser = false;
+  let initialPassword = "";
+
+  if (!user && existingEmailUser) {
+    if (existingEmailUser.member_id && String(existingEmailUser.member_id) !== String(member.id)) {
+      return { error: "Email already belongs to another member account" };
+    }
+    const linkResult = await linkUserToMember(existingEmailUser.id, member.id, memberData.phone);
+    if (linkResult.error) return linkResult;
+    user = { ...existingEmailUser, member_id: member.id, phone: memberData.phone || existingEmailUser.phone };
+  }
+
+  if (!user) {
+    const created = await createUserForMember(member.id, memberData.email, memberData.phone, {
+      permissions: [],
+      isAdmin: false
+    });
+    if (created.error) return created;
+    createdUser = true;
+    initialPassword = created.initialPassword;
+    user = await getUserByEmail(memberData.email);
+  }
+
+  await updateSubmission("applications", id, { ...application, status: "approved" });
+  return {
+    ok: true,
+    memberId: member.id,
+    userId: user?.id || "",
+    email: memberData.email,
+    initialPassword,
+    createdMember,
+    createdUser
+  };
+}
+
+async function rejectApplication(id) {
+  const application = await getSubmissionById("applications", id);
+  if (!application) return { error: "Application not found" };
+  await updateSubmission("applications", id, { ...application, status: "rejected" });
+  return { ok: true };
+}
+
 async function deleteSubmission(table, id) {
   if (!["applications", "messages"].includes(table)) {
     return { error: "Invalid submission type" };
@@ -704,6 +1251,47 @@ async function forumAuthor(user) {
   return member?.name || user.email || "Member";
 }
 
+async function getForumAuthorMap(userIds) {
+  const ids = [...new Set((userIds || []).map(String).filter(Boolean))];
+  const authors = new Map();
+  if (!ids.length) return authors;
+
+  if (isSupabase) {
+    const usersResult = await supabase.from("users").select("id,email,member_id").in("id", ids);
+    const users = assertSupabase(usersResult, "read forum users") || [];
+    const memberIds = [...new Set(users.map((user) => user.member_id).filter(Boolean).map(String))];
+    let members = [];
+    if (memberIds.length) {
+      const membersResult = await supabase.from("members").select("*").in("id", memberIds);
+      members = assertSupabase(membersResult, "read forum members") || [];
+    }
+    const membersById = new Map(members.map((member) => [String(member.id), member]));
+    for (const user of users) {
+      const member = membersById.get(String(user.member_id || ""));
+      authors.set(String(user.id), {
+        name: member?.name || user.email || "Member",
+        memberId: user.member_id || null
+      });
+    }
+    return authors;
+  }
+
+  const placeholders = ids.map(() => "?").join(",");
+  const users = (await querySQLite(`
+    SELECT u.id, u.email, u.member_id, m.name
+    FROM users u
+    LEFT JOIN members m ON m.id = u.member_id
+    WHERE u.id IN (${placeholders})
+  `, ids)).rows;
+  for (const user of users) {
+    authors.set(String(user.id), {
+      name: user.name || user.email || "Member",
+      memberId: user.member_id || null
+    });
+  }
+  return authors;
+}
+
 async function getForumPosts(userId = "") {
   if (isSupabase) {
     const postsResult = await supabase.from("forum_posts").select("*").order("created_at", { ascending: false });
@@ -722,16 +1310,22 @@ async function getForumPosts(userId = "") {
       throw new Error(`read forum likes: ${likesResult.error.message}`);
     }
 
-    return mapForumRows(postsResult.data || [], commentsResult.data || [], likesResult.data || [], userId);
+    const authorIds = [
+      ...(postsResult.data || []).map((post) => post.user_id),
+      ...(commentsResult.data || []).map((comment) => comment.user_id)
+    ];
+    const authors = await getForumAuthorMap(authorIds);
+    return mapForumRows(postsResult.data || [], commentsResult.data || [], likesResult.data || [], userId, authors);
   }
 
   const posts = (await querySQLite("SELECT * FROM forum_posts ORDER BY created_at DESC")).rows;
   const comments = (await querySQLite("SELECT * FROM forum_comments ORDER BY created_at ASC")).rows;
   const likes = (await querySQLite("SELECT * FROM forum_likes")).rows;
-  return mapForumRows(posts, comments, likes, userId);
+  const authors = await getForumAuthorMap([...posts.map((post) => post.user_id), ...comments.map((comment) => comment.user_id)]);
+  return mapForumRows(posts, comments, likes, userId, authors);
 }
 
-function mapForumRows(posts, comments, likes, userId = "") {
+function mapForumRows(posts, comments, likes, userId = "", authors = new Map()) {
   const commentsByPost = new Map();
   for (const comment of comments) {
     const key = String(comment.post_id);
@@ -740,7 +1334,7 @@ function mapForumRows(posts, comments, likes, userId = "") {
       id: comment.id,
       postId: comment.post_id,
       userId: comment.user_id,
-      authorName: comment.author_name,
+      authorName: authors.get(String(comment.user_id))?.name || comment.author_name || "Member",
       body: comment.body,
       createdAt: comment.created_at
     });
@@ -757,7 +1351,7 @@ function mapForumRows(posts, comments, likes, userId = "") {
   return posts.map((post) => ({
     id: post.id,
     userId: post.user_id,
-    authorName: post.author_name,
+    authorName: authors.get(String(post.user_id))?.name || post.author_name || "Member",
     title: post.title,
     category: post.category,
     body: post.body,
@@ -776,7 +1370,7 @@ async function createForumPost(user, body) {
 
   const row = {
     user_id: user.id,
-    author_name: await forumAuthor(user),
+    author_name: "",
     title,
     category: body.category || "General",
     body: text
@@ -800,7 +1394,7 @@ async function addForumComment(user, postId, body) {
   const row = {
     post_id: Number(postId),
     user_id: user.id,
-    author_name: await forumAuthor(user),
+    author_name: "",
     body: text
   };
 
@@ -919,18 +1513,18 @@ async function replaceSite(data) {
 
     sort = 0;
     for (const person of data.committee || []) {
+      const member = findPayloadMember(data, person.memberId);
+      const fallback = committeeFallback(person, member);
       await insertSupabase("committee", {
         id: maybeNumber(person.id),
-        name: person.name || "Committee member",
+        member_id: maybeNumber(person.memberId),
         role: person.role || "Member",
         year: person.year || "",
-        passing_year: person.passingYear || "",
+        passing_year: fallback.passingYear || "",
         biography: person.biography || "",
         message: person.message || "",
-        phone: person.phone || "",
-        image: person.image || "/assets/forum-logo.png",
         sort_order: sort++
-      });
+      }, "insert committee");
     }
 
     sort = 0;
@@ -1041,17 +1635,18 @@ async function replaceSiteSQLite(data) {
 
   sort = 0;
   for (const person of data.committee || []) {
+    const member = findPayloadMember(data, person.memberId);
+    const fallback = committeeFallback(person, member);
     await querySQLite(
-      "INSERT INTO committee (name, role, year, passing_year, biography, message, phone, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO committee (id, member_id, role, year, passing_year, biography, message, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       [
-        person.name || "Committee member",
+        maybeNumber(person.id) || null,
+        maybeNumber(person.memberId) || null,
         person.role || "Member",
         person.year || "",
-        person.passingYear || "",
+        fallback.passingYear || "",
         person.biography || "",
         person.message || "",
-        person.phone || "",
-        person.image || "/assets/forum-logo.png",
         sort++
       ]
     );
@@ -1060,8 +1655,9 @@ async function replaceSiteSQLite(data) {
   sort = 0;
   for (const member of data.members || []) {
     await querySQLite(
-      "INSERT INTO members (name, email, phone, address, batch, type, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO members (id, name, email, phone, address, batch, type, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
+        maybeNumber(member.id) || null,
         member.name || "Member",
         member.email || "",
         member.phone || "",
@@ -1116,17 +1712,23 @@ async function init() {
     CREATE TABLE IF NOT EXISTS top_links (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, path TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS hero_slides (id INTEGER PRIMARY KEY AUTOINCREMENT, image TEXT NOT NULL, eyebrow TEXT NOT NULL, title TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS pages (id INTEGER PRIMARY KEY AUTOINCREMENT, page_key TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, subtitle TEXT, image TEXT, render TEXT NOT NULL, download_label TEXT, download_url TEXT, filter TEXT, body_json TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS committee (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, role TEXT NOT NULL, year TEXT NOT NULL, passing_year TEXT, biography TEXT, message TEXT, phone TEXT, image TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS committee (id INTEGER PRIMARY KEY AUTOINCREMENT, member_id INTEGER, role TEXT NOT NULL, year TEXT NOT NULL, passing_year TEXT, biography TEXT, message TEXT, sort_order INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT, path TEXT, type TEXT NOT NULL, date TEXT NOT NULL, title TEXT NOT NULL, excerpt TEXT NOT NULL, body_json TEXT NOT NULL, image TEXT, sort_order INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS gallery (id INTEGER PRIMARY KEY AUTOINCREMENT, image TEXT NOT NULL, title TEXT, sort_order INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL, phone TEXT NOT NULL, batch TEXT NOT NULL, message TEXT, status TEXT NOT NULL DEFAULT 'new', payload_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL, phone TEXT, subject TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'new', payload_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS members (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, batch TEXT, type TEXT, image TEXT, sort_order INTEGER NOT NULL DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, phone TEXT, password_hash TEXT NOT NULL, permissions_json TEXT, is_admin INTEGER DEFAULT 0, must_change_password INTEGER DEFAULT 0, member_id INTEGER);
-    CREATE TABLE IF NOT EXISTS forum_posts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, author_name TEXT NOT NULL, title TEXT NOT NULL, category TEXT, body TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS forum_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL, user_id TEXT NOT NULL, author_name TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, permissions_json TEXT, is_admin INTEGER DEFAULT 0, must_change_password INTEGER DEFAULT 0, member_id INTEGER);
+    CREATE TABLE IF NOT EXISTS forum_posts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, author_name TEXT, title TEXT NOT NULL, category TEXT, body TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS forum_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL, user_id TEXT NOT NULL, author_name TEXT, body TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS forum_likes (post_id INTEGER NOT NULL, user_id TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (post_id, user_id));
   `);
+
+  try {
+    db.exec("ALTER TABLE committee ADD COLUMN member_id INTEGER");
+  } catch {
+    // Column already exists in newer local databases.
+  }
 
   const settings = await readSettings();
   if (!Object.keys(settings).length) {
@@ -1141,13 +1743,18 @@ async function init() {
 module.exports = {
   getPublicSite: () => readSite(false),
   getAdminSite: () => readSite(true),
+  getMemberById,
   getUserByEmail,
   updateUserPassword,
+  updateUserAccount,
   updateUserPermissions,
   updateMemberProfile,
   getAllMembersWithUsers,
   createUserForMember,
+  syncCommitteeMembersAndUsers,
   registerMemberUser,
+  approveApplication,
+  rejectApplication,
   resetUserPassword,
   updateSubmission,
   deleteSubmission,

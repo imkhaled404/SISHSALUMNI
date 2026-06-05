@@ -3,19 +3,25 @@ const http = require("http");
 const fs = require("fs/promises");
 const path = require("path");
 const crypto = require("crypto");
+const net = require("net");
+const tls = require("tls");
 const {
   getPublicSite,
   getAdminSite,
   replaceSite,
   addApplication,
   addMessage,
+  getMemberById,
   getUserByEmail,
   updateUserPassword,
+  updateUserAccount,
   updateUserPermissions,
   updateMemberProfile,
   getAllMembersWithUsers,
   createUserForMember,
-  registerMemberUser,
+  syncCommitteeMembersAndUsers,
+  approveApplication,
+  rejectApplication,
   resetUserPassword,
   updateSubmission,
   deleteSubmission,
@@ -142,11 +148,42 @@ function createSession(user) {
   return token;
 }
 
+async function publicUserPayload(user) {
+  const member = user?.member_id ? await getMemberById(user.member_id) : null;
+  return {
+    id: user.id,
+    email: user.email,
+    phone: member?.phone || "",
+    memberId: user.member_id || null,
+    isAdmin: !!user.is_admin,
+    member: member ? {
+      id: member.id,
+      name: member.name || "",
+      email: member.email || user.email || "",
+      phone: member.phone || "",
+      address: member.address || "",
+      batch: member.batch || "",
+      type: member.type || "",
+      image: member.image || ""
+    } : null
+  };
+}
+
 function hasPermission(session, permission) {
   if (session.user.is_admin) return true;
   const perms = JSON.parse(session.user.permissions_json || "[]");
   const aliases = permissionAliases[permission] || [];
   return perms.includes(permission) || aliases.some((alias) => perms.includes(alias));
+}
+
+function userAdminPermissions(user) {
+  return fromJson(user?.permissions_json, []);
+}
+
+function canAccessAdminUser(user) {
+  if (!user) return false;
+  if (user.is_admin) return true;
+  return userAdminPermissions(user).length > 0;
 }
 
 function canSaveSite(session) {
@@ -209,6 +246,151 @@ async function serveFile(res, filePath) {
   }
 }
 
+function smtpRead(socket) {
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    const timer = setTimeout(() => cleanup(reject, new Error("SMTP response timed out")), 15000);
+
+    function cleanup(done, value) {
+      clearTimeout(timer);
+      socket.off("data", onData);
+      socket.off("error", onError);
+      done(value);
+    }
+
+    function onError(error) {
+      cleanup(reject, error);
+    }
+
+    function onData(chunk) {
+      buffer += chunk.toString("utf8");
+      const lines = buffer.split(/\r?\n/).filter(Boolean);
+      if (lines.length && /^\d{3} /.test(lines[lines.length - 1])) {
+        cleanup(resolve, buffer);
+      }
+    }
+
+    socket.on("data", onData);
+    socket.on("error", onError);
+  });
+}
+
+async function smtpCommand(socket, command, expected) {
+  if (command) socket.write(`${command}\r\n`);
+  const response = await smtpRead(socket);
+  const code = Number(response.slice(0, 3));
+  const allowed = Array.isArray(expected) ? expected : [expected];
+  if (!allowed.includes(code)) {
+    throw new Error(`SMTP command failed: ${response.trim()}`);
+  }
+  return response;
+}
+
+function connectSmtp(host, port, secure) {
+  return new Promise((resolve, reject) => {
+    const socket = secure ? tls.connect({ host, port, servername: host }) : net.connect({ host, port });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("SMTP connection timed out"));
+    }, 15000);
+    socket.once(secure ? "secureConnect" : "connect", () => {
+      clearTimeout(timer);
+      resolve(socket);
+    });
+    socket.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+function upgradeSmtpTls(socket, host) {
+  return new Promise((resolve, reject) => {
+    const secureSocket = tls.connect({ socket, servername: host }, () => resolve(secureSocket));
+    secureSocket.once("error", reject);
+  });
+}
+
+function mailAddress(value) {
+  return String(value || "").trim().replace(/[<>\r\n]/g, "");
+}
+
+function dotEscape(value) {
+  return String(value || "").replace(/\r?\n/g, "\r\n").replace(/^\./gm, "..");
+}
+
+async function sendSmtpMail({ to, subject, text }) {
+  const host = process.env.SMTP_HOST;
+  if (!host) return { sent: false, skipped: "SMTP_HOST is not configured" };
+
+  const port = Number(process.env.SMTP_PORT || 587);
+  const secure = String(process.env.SMTP_SECURE || "").toLowerCase() === "true" || port === 465;
+  const startTls = !secure && String(process.env.SMTP_STARTTLS || "true").toLowerCase() !== "false";
+  const user = process.env.SMTP_USER || "";
+  const pass = process.env.SMTP_PASS || "";
+  const from = mailAddress(process.env.SMTP_FROM || process.env.MAIL_FROM || adminUser);
+  const recipient = mailAddress(to);
+  if (!recipient) return { sent: false, skipped: "Recipient email is empty" };
+
+  let socket = await connectSmtp(host, port, secure);
+  try {
+    await smtpCommand(socket, "", 220);
+    await smtpCommand(socket, "EHLO localhost", 250);
+    if (startTls) {
+      await smtpCommand(socket, "STARTTLS", 220);
+      socket = await upgradeSmtpTls(socket, host);
+      await smtpCommand(socket, "EHLO localhost", 250);
+    }
+    if (user || pass) {
+      await smtpCommand(socket, "AUTH LOGIN", 334);
+      await smtpCommand(socket, Buffer.from(user).toString("base64"), 334);
+      await smtpCommand(socket, Buffer.from(pass).toString("base64"), 235);
+    }
+
+    await smtpCommand(socket, `MAIL FROM:<${from}>`, 250);
+    await smtpCommand(socket, `RCPT TO:<${recipient}>`, [250, 251]);
+    await smtpCommand(socket, "DATA", 354);
+
+    const encodedSubject = `=?UTF-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`;
+    const body = [
+      `From: ${from}`,
+      `To: ${recipient}`,
+      `Subject: ${encodedSubject}`,
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=UTF-8",
+      "",
+      dotEscape(text),
+      "."
+    ].join("\r\n");
+    socket.write(`${body}\r\n`);
+    await smtpCommand(socket, "", 250);
+    await smtpCommand(socket, "QUIT", 221).catch(() => {});
+    return { sent: true };
+  } finally {
+    socket.destroy();
+  }
+}
+
+async function sendApprovalEmail(req, approval) {
+  const loginUrl = `${req.headers["x-forwarded-proto"] || "http"}://${req.headers.host}/login/`;
+  const passwordLine = approval.initialPassword
+    ? `Password: ${approval.initialPassword}\nPlease change this password after first login.`
+    : "Your account already exists. Please use your existing password.";
+  return sendSmtpMail({
+    to: approval.email,
+    subject: "Membership approved",
+    text: [
+      "Your membership application has been approved.",
+      "",
+      `Login: ${loginUrl}`,
+      `Email: ${approval.email}`,
+      passwordLine,
+      "",
+      "You can use your account for your profile and the forum. Admin access is only available if a site administrator assigns permissions."
+    ].join("\n")
+  });
+}
+
 async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/site") {
     sendJson(res, 200, await getPublicSite());
@@ -236,6 +418,10 @@ async function handleApi(req, res, url) {
     // Fall back to database users
     const user = await getUserByEmail(username);
     if (user && user.password_hash === hashPassword(password)) {
+      if (!canAccessAdminUser(user)) {
+        sendJson(res, 403, { error: "This account does not have admin access" });
+        return;
+      }
       const token = createSession(user);
       sendJson(res, 200, {
         token,
@@ -249,27 +435,6 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/api/auth/register") {
-    const body = await readBody(req);
-    const result = await registerMemberUser(body);
-    if (result.error) {
-      sendJson(res, 400, result);
-      return;
-    }
-    const user = await getUserByEmail(String(body.email || "").trim().toLowerCase());
-    const token = createSession(user);
-    sendJson(res, 201, {
-      ok: true,
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        memberId: user.member_id || null
-      }
-    });
-    return;
-  }
-
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
     const body = await readBody(req);
     const user = await getUserByEmail(String(body.email || body.username || "").trim().toLowerCase());
@@ -280,12 +445,7 @@ async function handleApi(req, res, url) {
     const token = createSession(user);
     sendJson(res, 200, {
       token,
-      user: {
-        id: user.id,
-        email: user.email,
-        memberId: user.member_id || null,
-        isAdmin: !!user.is_admin
-      }
+      user: await publicUserPayload(user)
     });
     return;
   }
@@ -293,13 +453,29 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/auth/me") {
     const session = getSession(req);
     sendJson(res, 200, {
-      user: session ? {
-        id: session.user.id,
-        email: session.user.email,
-        memberId: session.user.member_id || null,
-        isAdmin: !!session.user.is_admin
-      } : null
+      user: session ? await publicUserPayload(session.user) : null
     });
+    return;
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/auth/me") {
+    const session = requireAuth(req, res);
+    if (!session) return;
+    if (!session.user.member_id) {
+      sendJson(res, 400, { error: "This login is not linked to a member profile" });
+      return;
+    }
+    const body = await readBody(req);
+    const accountResult = await updateUserAccount(session.user.id, {
+      email: body.email
+    });
+    if (accountResult.error) {
+      sendJson(res, 400, accountResult);
+      return;
+    }
+    await updateMemberProfile(session.user.member_id, body);
+    if (body.email !== undefined) session.user.email = String(body.email || "").trim().toLowerCase();
+    sendJson(res, 200, { ok: true, user: await publicUserPayload(session.user) });
     return;
   }
 
@@ -352,6 +528,10 @@ async function handleApi(req, res, url) {
   // Auth required for admin endpoints below
   const session = requireAuth(req, res);
   if (!session) return;
+  if (!canAccessAdminUser(session.user)) {
+    sendJson(res, 403, { error: "This account does not have admin access" });
+    return;
+  }
 
   if (req.method === "GET" && url.pathname === "/api/admin/whoami") {
     sendJson(res, 200, {
@@ -398,6 +578,16 @@ async function handleApi(req, res, url) {
       permissions: body.permissions || [],
       isAdmin: !!body.isAdmin
     });
+    sendJson(res, result.error ? 400 : 200, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/admin/users/sync-committee") {
+    if (!session.user.is_admin) {
+      sendJson(res, 403, { error: "Permission denied" });
+      return;
+    }
+    const result = await syncCommitteeMembersAndUsers();
     sendJson(res, result.error ? 400 : 200, result);
     return;
   }
@@ -453,6 +643,36 @@ async function handleApi(req, res, url) {
     }
     const result = await replaceSite(allowedPayload);
     sendJson(res, 200, { ok: true, updatedAt: result.updatedAt });
+    return;
+  }
+
+  const applicationActionMatch = url.pathname.match(/^\/api\/admin\/applications\/([^/]+)\/(approve|reject)$/);
+  if (applicationActionMatch && req.method === "POST") {
+    if (!session.user.is_admin && !hasPermission(session, "manage_submissions")) {
+      sendJson(res, 403, { error: "Permission denied" });
+      return;
+    }
+
+    const [, id, action] = applicationActionMatch;
+    if (action === "reject") {
+      const result = await rejectApplication(id);
+      sendJson(res, result.error ? 400 : 200, result);
+      return;
+    }
+
+    const approval = await approveApplication(id);
+    if (approval.error) {
+      sendJson(res, 400, approval);
+      return;
+    }
+
+    let mail = { sent: false };
+    try {
+      mail = await sendApprovalEmail(req, approval);
+    } catch (error) {
+      mail = { sent: false, error: error.message || "Email send failed" };
+    }
+    sendJson(res, 200, { ...approval, mail });
     return;
   }
 

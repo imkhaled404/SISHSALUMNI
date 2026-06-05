@@ -200,6 +200,57 @@
     `;
   }
 
+  function memberLabel(member) {
+    if (!member) return "Select approved member";
+    const parts = [
+      member.name || "Member",
+      member.email ? `(${member.email})` : "",
+      member.batch ? `Batch ${member.batch}` : ""
+    ].filter(Boolean);
+    return parts.join(" ");
+  }
+
+  function memberById(memberId) {
+    return (state.data.members || []).find((member) => String(member.id || "") === String(memberId || "")) || null;
+  }
+
+  function memberPicker(selectedMemberId = "") {
+    const members = state.data.members || [];
+    const selectedMember = memberById(selectedMemberId);
+    return `
+      <label class="admin-field wide-field">
+        <span>Search and select member</span>
+        <input list="committeeMemberOptions" data-member-search value="${escapeHtml(selectedMember ? memberLabel(selectedMember) : "")}" placeholder="Type a member name, email, or batch">
+        <input type="hidden" name="memberId" value="${escapeHtml(selectedMemberId || "")}">
+        <datalist id="committeeMemberOptions">
+          ${members.map((member) => `<option value="${escapeHtml(memberLabel(member))}" data-id="${escapeHtml(member.id || "")}"></option>`).join("")}
+        </datalist>
+      </label>
+    `;
+  }
+
+  function committeeMemberSummary(member, person = {}) {
+    if (!member) {
+      const legacyName = person.name || person.email || "";
+      return `
+        <div class="linked-member-card wide-field">
+          <strong>${escapeHtml(legacyName || "No member selected")}</strong>
+          <span>${legacyName ? "Legacy committee entry. Select an approved member to link it." : "Committee entries must link to an approved member."}</span>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="linked-member-card wide-field">
+        ${member.image ? `<img src="${escapeHtml(member.image)}" alt="">` : ""}
+        <div>
+          <strong>${escapeHtml(member.name || "Member")}</strong>
+          <span>${escapeHtml([member.email, member.phone, member.batch ? `Batch ${member.batch}` : ""].filter(Boolean).join(" | "))}</span>
+        </div>
+      </div>
+    `;
+  }
+
   async function uploadImage(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -566,6 +617,7 @@
   }
 
   function itemLabel(item, index) {
+    if (item.memberId) return memberById(item.memberId)?.name || item.name || `Committee ${index + 1}`;
     return item.title || item.name || item.label || item.key || `Item ${index + 1}`;
   }
 
@@ -638,7 +690,7 @@
           ${field("Title", "title", post.title)}
           ${field("Slug", "slug", post.slug)}
           ${field("Path", "path", post.path)}
-          ${selectField("Category", "category", post.category, ["News", "Notice", "Career"])}
+          ${selectField("Category", "category", post.category, ["News", "Notice", "Career", "Event"])}
           ${field("Date", "date", post.date, "date")}
           ${field("Image path", "image", post.image)}
           ${textarea("Excerpt", "excerpt", post.excerpt, { wide: true })}
@@ -652,18 +704,18 @@
   function renderCommittee() {
     const index = selectedIndex("committee");
     const person = (state.data.committee || [])[index] || {};
+    const member = memberById(person.memberId);
     return `
-      ${panelIntro("Committee", "Maintain committee people by year with profile image, role, biography, and message.")}
+      ${panelIntro("Committee", "Select approved members and assign committee role, year, biography, and message.")}
       ${editorToolbar("committee")}
       <form class="admin-form" data-editor="committee" data-index="${index}">
         <div class="form-grid">
           ${field("Database id", "id", person.id || "", "text", { readonly: true })}
-          ${field("Name", "name", person.name)}
+          ${memberPicker(person.memberId || "")}
+          ${committeeMemberSummary(member, person)}
           ${field("Role", "role", person.role)}
           ${field("Year", "year", person.year)}
           ${field("Batch", "passingYear", person.passingYear || "")}
-          ${field("Phone", "phone", person.phone || "")}
-          ${field("Image path", "image", person.image)}
           ${textarea("Biography", "biography", person.biography || "")}
           ${textarea("Message", "message", person.message || "")}
         </div>
@@ -736,6 +788,11 @@
       ];
   }
 
+  function statusSelect(value) {
+    const statuses = ["new", "reviewed", "approved", "rejected", "archived"];
+    return `<select data-submission-field="status">${statuses.map((status) => `<option ${value === status ? "selected" : ""}>${status}</option>`).join("")}</select>`;
+  }
+
   function renderSubmissions(type) {
     const items = state.data[type] || [];
     const columns = submissionColumns(type);
@@ -760,11 +817,15 @@
               <tr data-submission-row="${escapeHtml(type)}" data-id="${escapeHtml(item.id || "")}" data-index="${index}">
                 <td>${escapeHtml(item.createdAt || item.created_at || "")}</td>
                 ${columns.map(([key]) => key === "status"
-        ? `<td><select data-submission-field="${key}"><option ${item.status === "new" ? "selected" : ""}>new</option><option ${item.status === "reviewed" ? "selected" : ""}>reviewed</option><option ${item.status === "approved" ? "selected" : ""}>approved</option><option ${item.status === "archived" ? "selected" : ""}>archived</option></select></td>`
+        ? `<td>${statusSelect(item.status || "new")}</td>`
         : `<td><input data-submission-field="${key}" value="${escapeHtml(item[key] || "")}"></td>`
       ).join("")}
                 <td class="row-action-cell">
                   <button class="plain-button" data-save-submission="${escapeHtml(type)}" type="button">Save</button>
+                  ${type === "applications" ? `
+                    <button class="plain-button primary" data-approve-application type="button">Approve</button>
+                    <button class="plain-button" data-reject-application type="button">Reject</button>
+                  ` : ""}
                   <button class="plain-button danger" data-delete-submission="${escapeHtml(type)}" type="button">Delete</button>
                 </td>
               </tr>
@@ -827,6 +888,15 @@
 
     return `
       ${panelIntro("Users and permissions", "Create user accounts, reset passwords, and assign permissions for each admin menu.")}
+      <div class="admin-form">
+        <div class="nested-panel-head">
+          <div>
+            <h3>Sync committee members</h3>
+            <p>Create missing member/user links from committee records. Khaled becomes system administrator; everyone else stays member only.</p>
+          </div>
+          <button class="plain-button primary" data-sync-committee-users type="button">Sync now</button>
+        </div>
+      </div>
       <form class="admin-form new-user-form" id="newUserForm">
         <div class="nested-panel-head">
           <div>
@@ -917,6 +987,13 @@
         next.path = normalizePath(values.path || next.slug);
       }
     }
+    if (editor === "committee") {
+      const member = memberById(values.memberId);
+      next.memberId = values.memberId || "";
+      if (member) {
+        next.passingYear = values.passingYear || member.batch || "";
+      }
+    }
     state.data[editor][index] = next;
   }
 
@@ -927,7 +1004,7 @@
     if (type === "heroSlides") return { image: "/assets/forum-logo.png", eyebrow: "Welcome", title: "New slide" };
     if (type === "pages") return { key: `page-${now}`, path: `/page-${now}/`, title: "New page", subtitle: "", render: "simple", image: "", body: [""] };
     if (type === "posts") return { slug: `post-${now}`, path: `/post-${now}/`, title: "New post", category: "News", date: today(), image: "/assets/forum-logo.png", excerpt: "", body: [""] };
-    if (type === "committee") return { name: "New member", role: "Member", year: "2026", passingYear: "", phone: "", image: "/assets/forum-logo.png", biography: "", message: "" };
+    if (type === "committee") return { memberId: "", role: "Member", year: "2026", passingYear: "", biography: "", message: "" };
     if (type === "members") return { name: "New member", email: "", phone: "", address: "", batch: "", type: "General", image: "" };
     if (type === "gallery") return { title: "Gallery image", image: "/assets/forum-logo.png" };
     return {};
@@ -954,6 +1031,21 @@
         const items = state.data[input.dataset.list] || [];
         const item = items[Number(input.dataset.index)];
         if (item) item[input.dataset.key] = input.value;
+      });
+    });
+
+    adminApp.querySelectorAll("[data-member-search]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const member = (state.data.members || []).find((item) => memberLabel(item) === input.value.trim());
+        const hidden = input.closest("form")?.querySelector("input[name='memberId']");
+        if (!member) {
+          if (hidden) hidden.value = "";
+          setStatus("Select a member from the suggestion list before saving committee.", "error");
+          return;
+        }
+        if (hidden) hidden.value = member.id || "";
+        collectCurrentForm();
+        renderAdmin();
       });
     });
 
@@ -1070,6 +1162,41 @@
       });
     });
 
+    adminApp.querySelectorAll("[data-approve-application]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const row = button.closest("[data-submission-row]");
+        const id = row.dataset.id;
+        setStatus("Approving application...");
+        try {
+          const result = await api(`/api/admin/applications/${encodeURIComponent(id)}/approve`, { method: "POST" });
+          state.data = await api("/api/admin/site");
+          if (state.user.isAdmin) state.users = await api("/api/admin/users");
+          renderAdmin();
+          const passwordText = result.initialPassword ? ` Initial password: ${result.initialPassword}.` : "";
+          const mailText = result.mail?.sent ? " Confirmation email sent." : ` Confirmation email not sent (${result.mail?.skipped || result.mail?.error || "not configured"}).`;
+          setStatus(`Application approved.${passwordText}${mailText}`, result.mail?.sent ? "success" : "info");
+        } catch (error) {
+          setStatus(error.message || "Approval failed.", "error");
+        }
+      });
+    });
+
+    adminApp.querySelectorAll("[data-reject-application]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const row = button.closest("[data-submission-row]");
+        const id = row.dataset.id;
+        setStatus("Rejecting application...");
+        try {
+          await api(`/api/admin/applications/${encodeURIComponent(id)}/reject`, { method: "POST" });
+          state.data = await api("/api/admin/site");
+          renderAdmin();
+          setStatus("Application rejected.", "success");
+        } catch (error) {
+          setStatus(error.message || "Reject failed.", "error");
+        }
+      });
+    });
+
     adminApp.querySelectorAll("[data-delete-submission]").forEach((button) => {
       button.addEventListener("click", async () => {
         const row = button.closest("[data-submission-row]");
@@ -1102,6 +1229,24 @@
         }
       });
     }
+
+    adminApp.querySelectorAll("[data-sync-committee-users]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        setStatus("Syncing committee members and users...");
+        try {
+          const result = await api("/api/admin/users/sync-committee", { method: "POST" });
+          state.data = await api("/api/admin/site");
+          state.users = await api("/api/admin/users");
+          renderAdmin();
+          setStatus(
+            `Sync complete. Members created: ${result.membersCreated || 0}, users created: ${result.usersCreated || 0}, Khaled admins: ${(result.khaledAdmins || []).length}.`,
+            "success"
+          );
+        } catch (error) {
+          setStatus(error.message || "Sync failed.", "error");
+        }
+      });
+    });
 
     const newUserForm = adminApp.querySelector("#newUserForm");
     if (newUserForm) {

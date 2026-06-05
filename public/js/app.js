@@ -412,6 +412,40 @@
   }
 
   /* ── Home Page ───────────────────────────────────────────── */
+  function homeEventsSection() {
+    const events = state.data.posts.filter((post) => post.category === "Event");
+    return `
+      <section class="content-section event-section">
+        <div class="container">
+          <div class="event-head">
+            <span class="eyebrow">অ্যালামনাই অ্যাসোসিয়েশন  ইভেন্টস</span>
+            <h2>অ্যালামনাই অ্যাসোসিয়েশন ইভেন্টস</h2>
+            <p>অ্যালামনাই ইভেন্টস সম্পর্কে জানুন</p>
+          </div>
+          ${events.length ? postCards(events.slice(0, 3)) : `<div class="empty-state">নতুন কোন ইভেন্ট নেই</div>`}
+        </div>
+      </section>
+    `;
+  }
+
+  function homeQuoteSection() {
+    const quotes = (state.data.quotes && state.data.quotes.length)
+      ? state.data.quotes
+      : [{
+        name: "এন আর মুর্থি",
+        quote: "প্রাক্তন শিক্ষার্থীদের চেয়ে বেশি কেউ একটি প্রতিষ্ঠান নিয়ে মাথা ঘামায় না"
+      }];
+    return `
+      <section class="quote-band alumni-quote-band">
+        <div class="container quote-grid">
+          ${quotes.map((item) =>
+      `<blockquote><p>${escapeHtml(item.quote)}</p><p>${escapeHtml(item.quote)}</p><cite>${escapeHtml(item.name)}</cite></blockquote>`
+    ).join("")}
+        </div>
+      </section>
+    `;
+  }
+
   function homePage() {
     const about = state.data.pages.find((p) => p.key === "about") || {};
     const recentPosts = state.data.posts.slice(0, 3);
@@ -439,13 +473,8 @@
           <div class="center-action"><a class="skew-button" href="/committee/">সব সদস্য দেখুন</a></div>
         </div>
       </section>
-      <section class="quote-band">
-        <div class="container quote-grid">
-          ${(state.data.quotes || []).map((item) =>
-      `<blockquote><p>${escapeHtml(item.quote)}</p><cite>— ${escapeHtml(item.name)}</cite></blockquote>`
-    ).join("")}
-        </div>
-      </section>
+      ${homeEventsSection()}
+      ${homeQuoteSection()}
       <section class="content-section">
         <div class="container">
           ${sectionHeading("সাম্প্রতিক সংবাদ", "ফোরামের সর্বশেষ কার্যক্রম সম্পর্কে জানুন", "সংবাদ")}
@@ -599,40 +628,29 @@
     `;
   }
 
-  function authForms() {
+  function loginForm(options = {}) {
     return `
-      <div class="auth-grid">
-        <form class="site-form auth-panel" data-auth-form="login">
-          <h3>সদস্য লগইন</h3>
-          <label>ই-মেইল<input name="email" type="email" required></label>
-          <label>পাসওয়ার্ড<input name="password" type="password" required></label>
-          <button class="skew-button" type="submit">প্রবেশ করুন</button>
-          <p class="form-status" aria-live="polite"></p>
-        </form>
-        <form class="site-form auth-panel" data-auth-form="register">
-          <h3>নতুন সদস্য নিবন্ধন</h3>
-          <label>নাম<input name="name" type="text" required></label>
-          <label>ই-মেইল<input name="email" type="email" required></label>
-          <label>ফোন<input name="phone" type="text"></label>
-          <label>ব্যাচ<input name="batch" type="text"></label>
-          <label>পাসওয়ার্ড<input name="password" type="password" minlength="6" required></label>
-          <button class="skew-button" type="submit">নিবন্ধন করুন</button>
-          <p class="form-status" aria-live="polite"></p>
-        </form>
-      </div>
+      <form class="site-form auth-panel" data-auth-form="login">
+        ${options.title === false ? "" : `<h3>${escapeHtml(options.title || "সদস্য লগইন")}</h3>`}
+        ${options.note ? `<p>${escapeHtml(options.note)}</p>` : ""}
+        <label>ই-মেইল<input name="email" type="email" required></label>
+        <label>পাসওয়ার্ড<input name="password" type="password" required></label>
+        <button class="skew-button" type="submit">প্রবেশ করুন</button>
+        <p class="form-status" aria-live="polite"></p>
+      </form>
     `;
   }
 
   function forumComposer() {
     if (!state.authUser) {
       return `
-        <div class="forum-auth">
+        <div class="forum-auth forum-join-card">
           <div>
             <span class="eyebrow">Member only</span>
-            <h2>ফোরামে লিখতে লগইন করুন</h2>
-            <p>নিবন্ধিত সদস্যরা ধারণা, প্রশ্ন, শিক্ষা বিষয়ক লেখা, স্মৃতি বা ঘোষণা প্রকাশ করতে পারবেন।</p>
+            <h2>আপনার পোস্ট লিখুন</h2>
+            <p>ফোরামে পোস্ট, লাইক বা মন্তব্য করতে সদস্য লগইন প্রয়োজন।</p>
           </div>
-          ${authForms()}
+          <button class="skew-button" data-require-login="পোস্ট করতে সদস্য লগইন করুন।" type="button">লগইন করে পোস্ট করুন</button>
         </div>
       `;
     }
@@ -684,6 +702,7 @@
           <button class="${post.likedByMe ? "active" : ""}" data-forum-like="${escapeHtml(post.id)}" type="button">
             ${post.likedByMe ? "লাইক করা" : "লাইক"} <span>${Number(post.likes || 0)}</span>
           </button>
+          <button data-comment-toggle="${escapeHtml(post.id)}" type="button">মন্তব্য</button>
           <button data-forum-share="${escapeHtml(postUrl)}" type="button">শেয়ার</button>
         </div>
         <div class="comment-list">
@@ -700,7 +719,11 @@
             <input name="body" type="text" placeholder="মন্তব্য লিখুন" required>
             <button class="plain-button" type="submit">মন্তব্য</button>
           </form>
-        ` : `<p class="forum-login-note">মন্তব্য বা লাইক করতে সদস্য লগইন করুন।</p>`}
+        ` : `
+          <div class="comment-form login-comment">
+            <button class="plain-button" data-require-login="মন্তব্য করতে সদস্য লগইন করুন।" type="button">মন্তব্য করতে লগইন করুন</button>
+          </div>
+        `}
       </article>
     `;
   }
@@ -709,9 +732,9 @@
     const posts = state.data.forumPosts || [];
     return `
       ${pageHero(page)}
+      ${loginPrompt()}
       <section class="content-section forum-section">
         <div class="container forum-layout">
-          ${forumComposer()}
           <div class="forum-feed">
             <div class="forum-feed-head">
               <div>
@@ -722,8 +745,22 @@
             </div>
             ${posts.length ? posts.map(forumPostCard).join("") : `<div class="empty-state">এখনো কোনো ফোরাম পোস্ট নেই। প্রথম পোস্টটি লিখুন।</div>`}
           </div>
+          <aside class="forum-sidebar">
+            ${forumComposer()}
+          </aside>
         </div>
       </section>
+    `;
+  }
+
+  function loginPrompt() {
+    return `
+      <div class="forum-login-modal" data-login-modal hidden>
+        <div class="forum-login-dialog">
+          <button class="plain-button" data-close-login type="button">বন্ধ</button>
+          ${loginForm({ title: "সদস্য লগইন", note: "এই কাজটি করতে সদস্য লগইন প্রয়োজন।" })}
+        </div>
+      </div>
     `;
   }
 
@@ -877,21 +914,32 @@
   /* ── Account / Login Page ────────────────────────────────── */
   function accountPage(page) {
     const user = state.authUser;
+    const member = user?.member || {};
     return `
       ${pageHero(page)}
       <section class="content-section">
         <div class="container account-layout">
           ${user ? `
-            <div class="site-form account-card">
+            <form class="site-form account-card" data-profile-form>
               <span class="eyebrow">Logged in</span>
-              <h2>আপনি লগইন করেছেন</h2>
-              <p>${escapeHtml(user.email)}</p>
+              <h2>আমার তথ্য</h2>
+              <div class="form-grid">
+                <label>নাম<input name="name" type="text" value="${escapeHtml(member.name || "")}" required></label>
+                <label>ই-মেইল<input name="email" type="email" value="${escapeHtml(member.email || user.email || "")}" required></label>
+                <label>ফোন<input name="phone" type="text" value="${escapeHtml(member.phone || user.phone || "")}"></label>
+                <label>ব্যাচ<input name="batch" type="text" value="${escapeHtml(member.batch || "")}"></label>
+                <label>ধরণ<input name="type" type="text" value="${escapeHtml(member.type || "")}"></label>
+                <label>ছবি পথ<input name="image" type="text" value="${escapeHtml(member.image || "")}"></label>
+                <label class="wide-field">ঠিকানা<input name="address" type="text" value="${escapeHtml(member.address || "")}"></label>
+              </div>
               <div class="account-actions">
+                <button class="skew-button" type="submit">তথ্য আপডেট করুন</button>
                 <a class="skew-button" href="/forum/">ফোরামে যান</a>
                 <button class="plain-button" data-member-logout type="button">লগআউট</button>
               </div>
-            </div>
-          ` : authForms()}
+              <p class="form-status" aria-live="polite"></p>
+            </form>
+          ` : loginForm({ note: "সদস্য অ্যাকাউন্ট থাকলে লগইন করুন। নতুন অ্যাকাউন্ট অ্যাডমিন প্যানেল থেকে তৈরি হবে।" })}
         </div>
       </section>
     `;
@@ -974,13 +1022,13 @@
   async function handleAuthForm(form) {
     const status = form.querySelector(".form-status");
     const payload = Object.fromEntries(new FormData(form).entries());
-    const isRegister = form.dataset.authForm === "register";
-    status.textContent = isRegister ? "নিবন্ধন হচ্ছে..." : "লগইন হচ্ছে...";
-    const result = await api(isRegister ? "/api/auth/register" : "/api/auth/login", {
+    status.textContent = "লগইন হচ্ছে...";
+    const result = await api("/api/auth/login", {
       method: "POST",
       body: JSON.stringify(payload)
     });
     setAuth(result.token, result.user);
+    await loadAuth();
     await refreshForum().catch(() => {});
     renderPage({ preserveScroll: true });
   }
@@ -988,6 +1036,20 @@
   async function refreshForumAndRender() {
     await refreshForum();
     renderPage({ preserveScroll: true });
+  }
+
+  function showLoginPrompt(message = "এই কাজটি করতে সদস্য লগইন প্রয়োজন।") {
+    const modal = app.querySelector("[data-login-modal]");
+    if (!modal) {
+      history.pushState({}, "", "/login/");
+      renderPage();
+      return;
+    }
+    modal.hidden = false;
+    const note = modal.querySelector(".auth-panel p");
+    if (note) note.textContent = message;
+    const email = modal.querySelector("input[name='email']");
+    if (email) email.focus();
   }
 
   /* ── Event Binding ───────────────────────────────────────── */
@@ -1076,9 +1138,42 @@
       });
     });
 
+    app.querySelectorAll("[data-close-login]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const modal = button.closest("[data-login-modal]");
+        if (modal) modal.hidden = true;
+      });
+    });
+
+    app.querySelectorAll("[data-require-login]").forEach((button) => {
+      button.addEventListener("click", () => {
+        showLoginPrompt(button.dataset.requireLogin);
+      });
+    });
+
+    app.querySelectorAll("form[data-profile-form]").forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const status = form.querySelector(".form-status");
+        status.textContent = "আপডেট হচ্ছে...";
+        try {
+          const payload = Object.fromEntries(new FormData(form).entries());
+          const result = await api("/api/auth/me", { method: "PUT", body: JSON.stringify(payload) });
+          state.authUser = result.user;
+          status.textContent = "তথ্য আপডেট হয়েছে।";
+        } catch (error) {
+          status.textContent = error.message || "তথ্য আপডেট করা যায়নি।";
+        }
+      });
+    });
+
     app.querySelectorAll("form[data-forum-post]").forEach((form) => {
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
+        if (!state.authUser) {
+          showLoginPrompt("পোস্ট করতে সদস্য লগইন করুন।");
+          return;
+        }
         const status = form.querySelector(".form-status");
         status.textContent = "পোস্ট প্রকাশ হচ্ছে...";
         try {
@@ -1095,6 +1190,10 @@
     app.querySelectorAll("form[data-forum-comment]").forEach((form) => {
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
+        if (!state.authUser) {
+          showLoginPrompt("মন্তব্য করতে সদস্য লগইন করুন।");
+          return;
+        }
         try {
           const payload = Object.fromEntries(new FormData(form).entries());
           await api(`/api/forum/posts/${encodeURIComponent(form.dataset.forumComment)}/comments`, {
@@ -1112,8 +1211,7 @@
     app.querySelectorAll("[data-forum-like]").forEach((button) => {
       button.addEventListener("click", async () => {
         if (!state.authUser) {
-          history.pushState({}, "", "/login/");
-          renderPage();
+          showLoginPrompt("লাইক দিতে সদস্য লগইন করুন।");
           return;
         }
         try {
@@ -1122,6 +1220,17 @@
         } catch {
           button.disabled = true;
         }
+      });
+    });
+
+    app.querySelectorAll("[data-comment-toggle]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!state.authUser) {
+          showLoginPrompt("মন্তব্য করতে সদস্য লগইন করুন।");
+          return;
+        }
+        const form = app.querySelector(`form[data-forum-comment="${CSS.escape(button.dataset.commentToggle)}"]`);
+        form?.querySelector("input")?.focus();
       });
     });
 

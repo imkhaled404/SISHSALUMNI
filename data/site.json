@@ -240,13 +240,6 @@
       "body": []
     },
     {
-      "key": "register",
-      "path": "/register/",
-      "title": "নিবন্ধন",
-      "render": "account",
-      "body": []
-    },
-    {
       "key": "account",
       "path": "/account/",
       "title": "অ্যাকাউন্ট",
