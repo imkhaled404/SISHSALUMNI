@@ -18,7 +18,8 @@ const {
   resetUserPassword,
   getUsers,
   hashPassword,
-  fromJson
+  fromJson,
+  init
 } = require("./db");
 
 const root = __dirname;
@@ -325,11 +326,23 @@ async function handleRequest(req, res) {
 
     await serveFile(res, path.join(publicDir, "index.html"));
   } catch (error) {
+    console.error("API Error at " + req.url + ":", error);
     sendJson(res, 500, { error: error.message || "Server error" });
   }
 }
 
-http.createServer(handleRequest).listen(port, () => {
-  console.log(`Alumni site running at http://localhost:${port}`);
-  console.log(`Admin panel: http://localhost:${port}/admin`);
-});
+async function startServer() {
+  try {
+    console.log("Initializing database...");
+    await init();
+    http.createServer(handleRequest).listen(port, () => {
+      console.log(`Alumni site running at http://localhost:${port}`);
+      console.log(`Admin panel: http://localhost:${port}/admin`);
+    });
+  } catch (err) {
+    console.error("Critical: Server failed to start:", err);
+    process.exit(1);
+  }
+}
+
+startServer();

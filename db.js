@@ -490,8 +490,7 @@ async function init() {
   await ensureSchema();
   await seedIfNeeded();
 }
-init().catch(err => console.error("Database initialization failed:", err));
-
+// Export init to be called by server.js
 module.exports = {
   getPublicSite: () => readSite(false),
   getAdminSite: () => readSite(true),
@@ -510,5 +509,6 @@ module.exports = {
     return res.rows.map(u => ({ ...u, permissions: fromJson(u.permissions_json, []) }));
   },
   hashPassword,
-  fromJson
+  fromJson,
+  init
 };
