@@ -14,9 +14,6 @@ The app uses SQLite at `data/site.db`. On first run it creates the database and 
 
 Default admin credentials:
 
-```text
-Username: admin
-Password: admin123
-```
+
 
 Set `ADMIN_USER`, `ADMIN_PASSWORD`, or `PORT` in the environment to change those values.
