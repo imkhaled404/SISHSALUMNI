@@ -42,6 +42,18 @@ const OPTIONAL_COLUMNS = {
   users: ["phone"]
 };
 
+const SITE_SECTION_TABLES = {
+  settings: ["settings"],
+  navigation: ["navigation"],
+  topLinks: ["top_links"],
+  heroSlides: ["hero_slides"],
+  pages: ["pages"],
+  committee: ["committee"],
+  members: ["members"],
+  posts: ["posts"],
+  gallery: ["gallery"]
+};
+
 function isMissingTable(error) {
   return /does not exist|schema cache|relation .* not found|Could not find the table/i.test(error.message || "");
 }
@@ -1436,20 +1448,402 @@ async function toggleForumLike(user, postId) {
   return { ok: true, liked: true };
 }
 
-async function clearEditableTables() {
+async function clearTable(table) {
   if (isSupabase) {
-    for (const table of EDITABLE_TABLES) {
-      const query = table === "settings"
-        ? supabase.from(table).delete().neq("name", "__never__")
-        : supabase.from(table).delete().neq("id", -1);
-      assertSupabase(await query, `clear ${table}`);
+    const query = table === "settings"
+      ? supabase.from(table).delete().neq("name", "__never__")
+      : supabase.from(table).delete().neq("id", -1);
+    assertSupabase(await query, `clear ${table}`);
+    return;
+  }
+
+  await querySQLite(`DELETE FROM ${table}`);
+}
+
+async function clearEditableTables() {
+  for (const table of EDITABLE_TABLES) {
+    await clearTable(table);
+  }
+}
+
+function payloadSectionKeys(data) {
+  return Object.keys(SITE_SECTION_TABLES).filter((key) => Object.prototype.hasOwnProperty.call(data || {}, key));
+}
+
+async function clearSiteSections(keys) {
+  const tables = [...new Set(keys.flatMap((key) => SITE_SECTION_TABLES[key] || []))];
+  for (const table of tables) {
+    if (table === "members") continue;
+    await clearTable(table);
+  }
+}
+
+async function saveMembersSection(members = []) {
+  const incomingIds = new Set(members.map((member) => maybeNumber(member.id)).filter(Boolean).map(String));
+
+  if (isSupabase) {
+    const existingResult = await supabase.from("members").select("id");
+    const existingRows = assertSupabase(existingResult, "read members for save") || [];
+
+    let sort = 0;
+    for (const member of members) {
+      const row = {
+        id: maybeNumber(member.id),
+        name: member.name || "Member",
+        email: member.email || "",
+        phone: member.phone || "",
+        address: member.address || "",
+        batch: member.batch || "",
+        type: member.type || "",
+        image: member.image || "",
+        sort_order: sort++
+      };
+      if (row.id) {
+        await upsertSupabase("members", row, "save member");
+      } else {
+        const created = await createMember(row);
+        await updateMemberProfile(created.id, { ...row, id: created.id });
+        incomingIds.add(String(created.id));
+      }
+    }
+
+    for (const existing of existingRows) {
+      if (!incomingIds.has(String(existing.id))) {
+        assertSupabase(await supabase.from("members").delete().eq("id", existing.id), "delete removed member");
+      }
     }
     return;
   }
 
-  for (const table of EDITABLE_TABLES) {
-    await querySQLite(`DELETE FROM ${table}`);
+  const existingRows = (await querySQLite("SELECT id FROM members")).rows;
+  let sort = 0;
+  for (const member of members) {
+    const id = maybeNumber(member.id);
+    const row = [
+      member.name || "Member",
+      member.email || "",
+      member.phone || "",
+      member.address || "",
+      member.batch || "",
+      member.type || "",
+      member.image || "",
+      sort++
+    ];
+    if (id) {
+      await querySQLite(
+        `INSERT INTO members (id, name, email, phone, address, batch, type, image, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           email = excluded.email,
+           phone = excluded.phone,
+           address = excluded.address,
+           batch = excluded.batch,
+           type = excluded.type,
+           image = excluded.image,
+           sort_order = excluded.sort_order`,
+        [id, ...row]
+      );
+    } else {
+      await querySQLite(
+        "INSERT INTO members (name, email, phone, address, batch, type, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        row
+      );
+    }
   }
+
+  for (const existing of existingRows) {
+    if (!incomingIds.has(String(existing.id))) {
+      await querySQLite("DELETE FROM members WHERE id = ?", [existing.id]);
+    }
+  }
+}
+
+async function insertSupabaseReturningId(table, row, action = `insert ${table}`) {
+  const payload = cleanRow(row);
+  let result = await supabase.from(table).insert(payload).select("id").single();
+  if (result.error && OPTIONAL_COLUMNS[table]?.length && isMissingColumn(result.error)) {
+    const fallback = { ...payload };
+    for (const key of OPTIONAL_COLUMNS[table]) delete fallback[key];
+    result = await supabase.from(table).insert(fallback).select("id").single();
+  }
+  if (result.error && /duplicate key value.*_pkey|duplicate key value/i.test(result.error.message || "")) {
+    const maxResult = await supabase.from(table).select("id").order("id", { ascending: false }).limit(1).maybeSingle();
+    const maxRow = assertSupabase(maxResult, `read max ${table} id`);
+    result = await supabase.from(table).insert({ ...payload, id: Number(maxRow?.id || 0) + 1 }).select("id").single();
+  }
+  const created = assertSupabase(result, action);
+  return created.id;
+}
+
+async function deleteSupabaseRowsNotIn(table, keepIds) {
+  const existingResult = await supabase.from(table).select("id");
+  const existingRows = assertSupabase(existingResult, `read ${table} for cleanup`) || [];
+  for (const row of existingRows) {
+    if (!keepIds.has(String(row.id))) {
+      assertSupabase(await supabase.from(table).delete().eq("id", row.id), `delete removed ${table}`);
+    }
+  }
+}
+
+async function saveSupabaseRows(table, rows, action = `save ${table}`) {
+  const keepIds = new Set();
+  for (const row of rows) {
+    if (row.id) {
+      await upsertSupabase(table, row, action);
+      keepIds.add(String(row.id));
+    } else {
+      const id = await insertSupabaseReturningId(table, row, action);
+      keepIds.add(String(id));
+    }
+  }
+  await deleteSupabaseRowsNotIn(table, keepIds);
+}
+
+async function saveSupabaseSettings(settings = {}) {
+  const keepNames = new Set(Object.keys(settings));
+  for (const [name, value] of Object.entries(settings)) {
+    await upsertSupabase("settings", { name, value_json: toJson(value) }, `save setting ${name}`);
+  }
+  const existingResult = await supabase.from("settings").select("name");
+  const existingRows = assertSupabase(existingResult, "read settings for cleanup") || [];
+  for (const row of existingRows) {
+    if (!keepNames.has(row.name)) {
+      assertSupabase(await supabase.from("settings").delete().eq("name", row.name), "delete removed setting");
+    }
+  }
+}
+
+async function saveSiteSections(data, keys = payloadSectionKeys(data)) {
+  const updatedAt = new Date().toISOString();
+  const sectionKeys = [...new Set(keys)].filter((key) => SITE_SECTION_TABLES[key]);
+  if (!sectionKeys.length) return { updatedAt };
+
+  if (isSupabase) {
+    if (sectionKeys.includes("settings")) {
+      await saveSupabaseSettings(data.settings || {});
+    }
+
+    if (sectionKeys.includes("navigation")) {
+      let sort = 0;
+      await saveSupabaseRows("navigation", (data.navigation || []).map((item) => ({
+          id: maybeNumber(item.id),
+          label: item.label || "Menu item",
+          path: normalizePath(item.path),
+          sort_order: sort++
+      })), "save navigation");
+    }
+
+    if (sectionKeys.includes("topLinks")) {
+      let sort = 0;
+      await saveSupabaseRows("top_links", (data.topLinks || []).map((item) => ({
+          id: maybeNumber(item.id),
+          label: item.label || "Top link",
+          path: normalizePath(item.path),
+          sort_order: sort++
+      })), "save top links");
+    }
+
+    if (sectionKeys.includes("heroSlides")) {
+      let sort = 0;
+      await saveSupabaseRows("hero_slides", (data.heroSlides || []).map((slide) => ({
+          id: maybeNumber(slide.id),
+          image: slide.image || "/assets/forum-logo.png",
+          eyebrow: slide.eyebrow || "",
+          title: slide.title || "Welcome",
+          sort_order: sort++
+      })), "save hero slides");
+    }
+
+    if (sectionKeys.includes("pages")) {
+      let sort = 0;
+      await saveSupabaseRows("pages", (data.pages || []).map((page) => ({
+          id: maybeNumber(page.id),
+          page_key: page.key || slugify(page.title, "page"),
+          path: normalizePath(page.path),
+          title: page.title || "Untitled page",
+          subtitle: page.subtitle || "",
+          image: page.image || "",
+          render: page.render || "simple",
+          download_label: page.downloadLabel || "",
+          download_url: page.downloadUrl || "",
+          filter: page.filter || "",
+          body_json: toJson(page.body || []),
+          sort_order: sort++
+      })), "save pages");
+    }
+
+    if (sectionKeys.includes("committee")) {
+      let sort = 0;
+      await saveSupabaseRows("committee", (data.committee || []).map((person) => ({
+          id: maybeNumber(person.id),
+          member_id: maybeNumber(person.memberId),
+          role: person.role || "Member",
+          year: person.year || "",
+          passing_year: person.passingYear || "",
+          biography: person.biography || "",
+          message: person.message || "",
+          sort_order: sort++
+      })), "save committee");
+    }
+
+    if (sectionKeys.includes("members")) {
+      await saveMembersSection(data.members || []);
+    }
+
+    if (sectionKeys.includes("posts")) {
+      let sort = 0;
+      await saveSupabaseRows("posts", (data.posts || []).map((post) => {
+        const slug = post.slug || slugify(post.title, "post");
+        return {
+          id: maybeNumber(post.id),
+          type: post.category || "News",
+          date: post.date || new Date().toISOString().slice(0, 10),
+          title: post.title || "Untitled post",
+          slug,
+          path: normalizePath(post.path || slug),
+          image: post.image || "",
+          excerpt: post.excerpt || "",
+          body_json: toJson(post.body || []),
+          sort_order: sort++
+        };
+      }), "save posts");
+    }
+
+    if (sectionKeys.includes("gallery")) {
+      let sort = 0;
+      await saveSupabaseRows("gallery", (data.gallery || []).map((item) => ({
+          id: maybeNumber(item.id),
+          image: item.image || "/assets/forum-logo.png",
+          title: item.title || "",
+          sort_order: sort++
+      })), "save gallery");
+    }
+  } else {
+    await clearSiteSections(sectionKeys);
+    if (sectionKeys.includes("settings")) {
+      for (const [name, value] of Object.entries(data.settings || {})) {
+        await querySQLite("INSERT INTO settings (name, value_json) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET value_json = excluded.value_json", [
+          name,
+          toJson(value)
+        ]);
+      }
+    }
+
+    if (sectionKeys.includes("navigation")) {
+      let sort = 0;
+      for (const item of data.navigation || []) {
+        await querySQLite("INSERT INTO navigation (label, path, sort_order) VALUES (?, ?, ?)", [
+          item.label || "Menu item",
+          normalizePath(item.path),
+          sort++
+        ]);
+      }
+    }
+
+    if (sectionKeys.includes("topLinks")) {
+      let sort = 0;
+      for (const item of data.topLinks || []) {
+        await querySQLite("INSERT INTO top_links (label, path, sort_order) VALUES (?, ?, ?)", [
+          item.label || "Top link",
+          normalizePath(item.path),
+          sort++
+        ]);
+      }
+    }
+
+    if (sectionKeys.includes("heroSlides")) {
+      let sort = 0;
+      for (const slide of data.heroSlides || []) {
+        await querySQLite("INSERT INTO hero_slides (image, eyebrow, title, sort_order) VALUES (?, ?, ?, ?)", [
+          slide.image || "/assets/forum-logo.png",
+          slide.eyebrow || "",
+          slide.title || "Welcome",
+          sort++
+        ]);
+      }
+    }
+
+    if (sectionKeys.includes("pages")) {
+      let sort = 0;
+      for (const page of data.pages || []) {
+        await querySQLite(
+          "INSERT INTO pages (page_key, path, title, subtitle, image, render, download_label, download_url, filter, body_json, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          [
+            page.key || slugify(page.title, "page"),
+            normalizePath(page.path),
+            page.title || "Untitled page",
+            page.subtitle || "",
+            page.image || "",
+            page.render || "simple",
+            page.downloadLabel || "",
+            page.downloadUrl || "",
+            page.filter || "",
+            toJson(page.body || []),
+            sort++
+          ]
+        );
+      }
+    }
+
+    if (sectionKeys.includes("committee")) {
+      let sort = 0;
+      for (const person of data.committee || []) {
+        await querySQLite(
+          "INSERT INTO committee (id, member_id, role, year, passing_year, biography, message, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          [
+            maybeNumber(person.id) || null,
+            maybeNumber(person.memberId) || null,
+            person.role || "Member",
+            person.year || "",
+            person.passingYear || "",
+            person.biography || "",
+            person.message || "",
+            sort++
+          ]
+        );
+      }
+    }
+
+    if (sectionKeys.includes("members")) {
+      await saveMembersSection(data.members || []);
+    }
+
+    if (sectionKeys.includes("posts")) {
+      let sort = 0;
+      for (const post of data.posts || []) {
+        const slug = post.slug || slugify(post.title, "post");
+        await querySQLite(
+          "INSERT INTO posts (slug, path, type, date, title, excerpt, body_json, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          [
+            slug,
+            normalizePath(post.path || slug),
+            post.category || "News",
+            post.date || new Date().toISOString().slice(0, 10),
+            post.title || "Untitled post",
+            post.excerpt || "",
+            toJson(post.body || []),
+            post.image || "",
+            sort++
+          ]
+        );
+      }
+    }
+
+    if (sectionKeys.includes("gallery")) {
+      let sort = 0;
+      for (const item of data.gallery || []) {
+        await querySQLite("INSERT INTO gallery (image, title, sort_order) VALUES (?, ?, ?)", [
+          item.image || "/assets/forum-logo.png",
+          item.title || "",
+          sort++
+        ]);
+      }
+    }
+  }
+
+  await setMeta("updatedAt", updatedAt);
+  return { updatedAt };
 }
 
 async function replaceSite(data) {
@@ -1772,6 +2166,7 @@ module.exports = {
     return res.rows.map((u) => ({ ...u, permissions: fromJson(u.permissions_json, []) }));
   },
   replaceSite,
+  saveSiteSections,
   addApplication: (body) => addSubmission("applications", body),
   addMessage: (body) => addSubmission("messages", body),
   hashPassword,

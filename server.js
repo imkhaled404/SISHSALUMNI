@@ -9,6 +9,7 @@ const {
   getPublicSite,
   getAdminSite,
   replaceSite,
+  saveSiteSections,
   addApplication,
   addMessage,
   getMemberById,
@@ -192,19 +193,19 @@ function canSaveSite(session) {
 }
 
 async function buildAllowedSitePayload(session, body) {
-  const current = await getAdminSite();
   const canEditAll = session.user.is_admin || hasPermission(session, "edit_any");
+  const allowed = {};
   let changed = false;
   for (const section of siteSectionPermissions) {
     if (!canEditAll && !hasPermission(session, section.permission)) continue;
     for (const key of section.keys) {
       if (Object.prototype.hasOwnProperty.call(body, key)) {
-        current[key] = body[key];
+        allowed[key] = body[key];
         changed = true;
       }
     }
   }
-  return changed ? current : null;
+  return changed ? allowed : null;
 }
 
 async function getAvailableAssetName(filename) {
@@ -641,7 +642,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 403, { error: "Permission denied" });
       return;
     }
-    const result = await replaceSite(allowedPayload);
+    const result = await saveSiteSections(allowedPayload);
     sendJson(res, 200, { ok: true, updatedAt: result.updatedAt });
     return;
   }

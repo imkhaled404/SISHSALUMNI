@@ -1367,7 +1367,8 @@
     try {
       const result = await api("/api/admin/site", {
         method: "PUT",
-        body: JSON.stringify(payloadForCurrentTab())
+        body: JSON.stringify(payloadForCurrentTab()),
+        timeoutMs: 600000
       });
       state.data.updatedAt = result.updatedAt;
       setStatus("Changes saved.", "success");
