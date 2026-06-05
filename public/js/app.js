@@ -22,7 +22,11 @@
     authToken: storage.getItem(memberTokenKey),
     authUser: null,
     slide: 0,
-    committeeYear: ""
+    committeeYear: "",
+    memberSearch: "",
+    memberYear: "",
+    memberPage: 1,
+    memberPageSize: 10
   };
 
   /* ── Utilities ─────────────────────────────────────────── */
@@ -553,35 +557,114 @@
   }
 
   /* ── Members Page ────────────────────────────────────────── */
+  function memberYearOptions() {
+    return [...new Set((state.data.members || []).map((member) => member.batch || "").filter(Boolean))]
+      .sort((a, b) => yearScore(b) - yearScore(a));
+  }
+
+  function filteredMembers() {
+    const query = state.memberSearch.trim().toLowerCase();
+    const year = state.memberYear;
+    return (state.data.members || []).filter((member) => {
+      if (year && String(member.batch || "") !== String(year)) return false;
+      if (!query) return true;
+      const haystack = [
+        member.name,
+        member.email,
+        member.phone,
+        member.address,
+        member.batch,
+        member.type
+      ].join(" ").toLowerCase();
+      return haystack.includes(query);
+    });
+  }
+
+  function memberDataTable() {
+    const members = filteredMembers();
+    const total = members.length;
+    const pageSize = Number(state.memberPageSize) || 10;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    state.memberPage = Math.min(Math.max(1, Number(state.memberPage) || 1), totalPages);
+    const start = total ? (state.memberPage - 1) * pageSize : 0;
+    const visible = members.slice(start, start + pageSize);
+    const from = total ? start + 1 : 0;
+    const to = Math.min(start + pageSize, total);
+    const years = memberYearOptions();
+
+    return `
+      <div class="member-data-panel">
+        <div class="member-data-toolbar">
+          <label class="member-search-field">
+            <span>সার্চ</span>
+            <input data-member-table-search type="search" value="${escapeHtml(state.memberSearch)}" placeholder="নাম, ফোন, ই-মেইল, ঠিকানা">
+          </label>
+          <label>
+            <span>ব্যাচ / বছর</span>
+            <select data-member-table-year>
+              <option value="">সব বছর</option>
+              ${years.map((year) => `<option value="${escapeHtml(year)}" ${year === state.memberYear ? "selected" : ""}>${escapeHtml(year)}</option>`).join("")}
+            </select>
+          </label>
+          <label>
+            <span>প্রতি পেজ</span>
+            <select data-member-table-page-size>
+              ${[10, 25, 50, 100].map((size) => `<option value="${size}" ${Number(state.memberPageSize) === size ? "selected" : ""}>${size}</option>`).join("")}
+            </select>
+          </label>
+          <button class="plain-button" data-member-table-reset type="button">রিসেট</button>
+        </div>
+
+        <div class="member-table-summary">
+          <span>${escapeHtml(String(from))}-${escapeHtml(String(to))} / ${escapeHtml(String(total))} সদস্য</span>
+          ${state.memberYear ? `<strong>ব্যাচ: ${escapeHtml(state.memberYear)}</strong>` : ""}
+        </div>
+
+        <div class="table-wrap member-data-table-wrap">
+          <table class="members-table member-data-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>নাম</th>
+                <th>ই-মেইল</th>
+                <th>ফোন</th>
+                <th>ঠিকানা</th>
+                <th>ব্যাচ</th>
+                <th>ধরণ</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${visible.length ? visible.map((member, i) =>
+      `<tr>
+                  <td data-label="#">${start + i + 1}</td>
+                  <td data-label="নাম"><strong>${escapeHtml(member.name || "")}</strong></td>
+                  <td data-label="ই-মেইল">${escapeHtml(member.email || "")}</td>
+                  <td data-label="ফোন">${escapeHtml(member.phone || "")}</td>
+                  <td data-label="ঠিকানা">${escapeHtml(member.address || "")}</td>
+                  <td data-label="ব্যাচ">${escapeHtml(member.batch || "")}</td>
+                  <td data-label="ধরণ">${escapeHtml(member.type || "")}</td>
+                </tr>`
+    ).join("") : `<tr><td colspan="7"><div class="empty-state">কোন সদস্য পাওয়া যায়নি।</div></td></tr>`}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="member-pagination">
+          <button class="plain-button" data-member-table-page="${state.memberPage - 1}" ${state.memberPage <= 1 ? "disabled" : ""} type="button">পূর্ববর্তী</button>
+          <span>পেজ ${escapeHtml(String(state.memberPage))} / ${escapeHtml(String(totalPages))}</span>
+          <button class="plain-button" data-member-table-page="${state.memberPage + 1}" ${state.memberPage >= totalPages ? "disabled" : ""} type="button">পরবর্তী</button>
+        </div>
+      </div>
+    `;
+  }
+
   function membersPage(page) {
     return `
       ${pageHero(page)}
       <section class="content-section">
         <div class="container">
-          <div class="table-wrap">
-            <table class="members-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>নাম</th>
-                  <th>ঠিকানা</th>
-                  <th>ব্যাচ</th>
-                  <th>ধরন</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${state.data.members.map((member, i) =>
-      `<tr>
-                    <td>${i + 1}</td>
-                    <td>${escapeHtml(member.name)}</td>
-                    <td>${escapeHtml(member.address)}</td>
-                    <td>${escapeHtml(member.batch)}</td>
-                    <td>${escapeHtml(member.type)}</td>
-                  </tr>`
-    ).join("")}
-              </tbody>
-            </table>
-          </div>
+          ${sectionHeading(page.title, page.subtitle || "সদস্যদের তথ্য খুঁজুন ও ব্যাচ অনুযায়ী ফিল্টার করুন")}
+          ${memberDataTable()}
         </div>
       </section>
     `;
@@ -1110,6 +1193,56 @@
     if (committeeYearSel) {
       committeeYearSel.addEventListener("change", () => {
         state.committeeYear = committeeYearSel.value;
+        renderPage({ preserveScroll: true });
+      });
+    }
+
+    const memberSearch = app.querySelector("[data-member-table-search]");
+    if (memberSearch) {
+      memberSearch.addEventListener("input", () => {
+        state.memberSearch = memberSearch.value;
+        state.memberPage = 1;
+        renderPage({ preserveScroll: true });
+        const nextSearch = app.querySelector("[data-member-table-search]");
+        if (nextSearch) {
+          nextSearch.focus();
+          nextSearch.setSelectionRange(nextSearch.value.length, nextSearch.value.length);
+        }
+      });
+    }
+
+    const memberYear = app.querySelector("[data-member-table-year]");
+    if (memberYear) {
+      memberYear.addEventListener("change", () => {
+        state.memberYear = memberYear.value;
+        state.memberPage = 1;
+        renderPage({ preserveScroll: true });
+      });
+    }
+
+    const memberPageSize = app.querySelector("[data-member-table-page-size]");
+    if (memberPageSize) {
+      memberPageSize.addEventListener("change", () => {
+        state.memberPageSize = Number(memberPageSize.value) || 10;
+        state.memberPage = 1;
+        renderPage({ preserveScroll: true });
+      });
+    }
+
+    app.querySelectorAll("[data-member-table-page]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.memberPage = Number(button.dataset.memberTablePage) || 1;
+        renderPage({ preserveScroll: true });
+      });
+    });
+
+    const memberReset = app.querySelector("[data-member-table-reset]");
+    if (memberReset) {
+      memberReset.addEventListener("click", () => {
+        state.memberSearch = "";
+        state.memberYear = "";
+        state.memberPage = 1;
+        state.memberPageSize = 10;
         renderPage({ preserveScroll: true });
       });
     }
