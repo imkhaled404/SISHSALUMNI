@@ -1,12 +1,63 @@
 (function () {
   const adminApp = document.getElementById("adminApp");
   const tokenKey = "alumniAdminToken";
+  const userKey = "alumniUser";
+  const storage = (() => {
+    try {
+      if (!window.localStorage) throw new Error("Storage unavailable");
+      const testKey = "__admin_storage_test__";
+      window.localStorage.setItem(testKey, "1");
+      window.localStorage.removeItem(testKey);
+      return window.localStorage;
+    } catch {
+      return {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {}
+      };
+    }
+  })();
+
+  const PERMISSIONS = [
+    { key: "manage_settings", label: "Settings" },
+    { key: "manage_menus", label: "Menus" },
+    { key: "manage_slides", label: "Hero slides" },
+    { key: "manage_pages", label: "Pages" },
+    { key: "manage_posts", label: "News and notices" },
+    { key: "manage_committee", label: "Committee" },
+    { key: "manage_members", label: "Members" },
+    { key: "manage_gallery", label: "Gallery" },
+    { key: "view_submissions", label: "Applications and messages" },
+    { key: "upload_image", label: "Asset uploads" },
+    { key: "edit_any", label: "Everything" }
+  ];
+
+  const LEGACY_PERMISSIONS = {
+    add_post: "manage_posts",
+    add_member: "manage_members"
+  };
+
+  const TAB_PERMISSIONS = {
+    settings: "manage_settings",
+    menus: "manage_menus",
+    slides: "manage_slides",
+    pages: "manage_pages",
+    posts: "manage_posts",
+    committee: "manage_committee",
+    members: "manage_members",
+    gallery: "manage_gallery",
+    applications: "view_submissions",
+    messages: "view_submissions"
+  };
+
+  const SAVE_TABS = new Set(["settings", "menus", "slides", "pages", "posts", "committee", "members", "gallery"]);
+
   const state = {
-    token: localStorage.getItem(tokenKey),
-    user: JSON.parse(localStorage.getItem("alumniUser") || "{}"),
+    token: storage.getItem(tokenKey),
+    user: JSON.parse(storage.getItem(userKey) || "{}"),
     data: null,
     users: [],
-    tab: "settings",
+    tab: "dashboard",
     selected: {
       pages: 0,
       posts: 0,
@@ -16,9 +67,32 @@
     }
   };
 
-  function hasPerm(p) {
+  function normalizePermissions(permissions) {
+    const set = new Set(Array.isArray(permissions) ? permissions : []);
+    for (const [legacy, modern] of Object.entries(LEGACY_PERMISSIONS)) {
+      if (set.has(legacy)) set.add(modern);
+    }
+    return set;
+  }
+
+  function hasPerm(permission) {
     if (state.user.isAdmin) return true;
-    return Array.isArray(state.user.permissions) && state.user.permissions.includes(p);
+    const perms = normalizePermissions(state.user.permissions);
+    return perms.has("edit_any") || perms.has(permission);
+  }
+
+  function canOpenTab(tab) {
+    if (tab === "dashboard" || tab === "me") return true;
+    if (tab === "users") return !!state.user.isAdmin;
+    const permission = TAB_PERMISSIONS[tab];
+    return permission ? hasPerm(permission) : false;
+  }
+
+  function canSaveCurrentTab() {
+    if (!SAVE_TABS.has(state.tab)) return false;
+    if (state.user.isAdmin || hasPerm("edit_any")) return true;
+    const permission = TAB_PERMISSIONS[state.tab];
+    return permission ? hasPerm(permission) : false;
   }
 
   const escapeHtml = (value) =>
@@ -29,38 +103,99 @@
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#039;");
 
-  const multiline = (items = []) => items.join("\n\n");
-  const splitLines = (value) => String(value || "").split(/\n{2,}/).map((line) => line.trim()).filter(Boolean);
+  const multiline = (items = []) => (Array.isArray(items) ? items : []).join("\n\n");
+  const splitParagraphs = (value) => String(value || "").split(/\n{2,}/).map((line) => line.trim()).filter(Boolean);
+  const today = () => new Date().toISOString().slice(0, 10);
+
+  function slugify(value, fallback = "item") {
+    const slug = String(value || "")
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return slug || `${fallback}-${Date.now()}`;
+  }
+
+  function normalizePath(value) {
+    let next = String(value || "/").trim();
+    if (!next.startsWith("/")) next = `/${next}`;
+    if (next !== "/" && !next.endsWith("/")) next += "/";
+    return next;
+  }
 
   async function api(url, options = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs || 15000);
     const response = await fetch(url, {
       ...options,
+      signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
         ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}),
         ...(options.headers || {})
       }
-    });
+    }).finally(() => clearTimeout(timer));
+    const text = await response.text();
+    const payload = text ? JSON.parse(text) : {};
     if (!response.ok) {
       if (response.status === 401) {
-        localStorage.removeItem(tokenKey);
+        storage.removeItem(tokenKey);
+        storage.removeItem(userKey);
         state.token = null;
-        renderLogin("Session expired");
+        state.user = {};
+        renderLogin("Session expired. Please login again.");
       }
-      throw new Error("Request failed");
+      throw new Error(payload.error || "Request failed");
     }
-    return response.json();
+    return payload;
   }
 
-  function field(label, name, value = "", type = "text") {
-    const isImage = name.toLowerCase().includes("image") || name.toLowerCase().includes("logo");
+  function setStatus(message, tone = "info") {
+    const status = document.getElementById("adminStatus");
+    if (!status) return;
+    status.textContent = message;
+    status.dataset.tone = tone;
+  }
+
+  function field(label, name, value = "", type = "text", options = {}) {
+    const upload = options.upload || /image|logo|background/i.test(name);
+    const wide = options.wide ? " wide-field" : "";
+    const inputAttrs = [
+      `name="${escapeHtml(name)}"`,
+      `type="${escapeHtml(type)}"`,
+      `value="${escapeHtml(value)}"`,
+      options.readonly ? "readonly" : "",
+      options.placeholder ? `placeholder="${escapeHtml(options.placeholder)}"` : ""
+    ].filter(Boolean).join(" ");
+
     return `
-      <label>
-        ${escapeHtml(label)}
-        <div class="field-with-action">
-          <input name="${escapeHtml(name)}" type="${type}" value="${escapeHtml(value)}">
-          ${isImage ? `<button class="upload-trigger" type="button" data-for="${escapeHtml(name)}">Upload</button>` : ""}
+      <label class="admin-field${wide}">
+        <span>${escapeHtml(label)}</span>
+        <div class="${upload ? "field-with-action" : ""}">
+          <input ${inputAttrs}>
+          ${upload ? `<button class="plain-button upload-trigger" type="button" data-for="${escapeHtml(name)}">Choose</button>` : ""}
         </div>
+        ${upload && value ? `<img class="asset-preview" src="${escapeHtml(value)}" alt="">` : ""}
+      </label>
+    `;
+  }
+
+  function textarea(label, name, value = "", options = {}) {
+    return `
+      <label class="admin-field${options.wide === false ? "" : " wide-field"}">
+        <span>${escapeHtml(label)}</span>
+        <textarea name="${escapeHtml(name)}">${escapeHtml(value)}</textarea>
+      </label>
+    `;
+  }
+
+  function selectField(label, name, value, options) {
+    return `
+      <label class="admin-field">
+        <span>${escapeHtml(label)}</span>
+        <select name="${escapeHtml(name)}">
+          ${options.map((option) => `<option value="${escapeHtml(option)}" ${String(option) === String(value || "") ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
+        </select>
       </label>
     `;
   }
@@ -68,33 +203,159 @@
   async function uploadImage(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.readAsDataURL(file);
       reader.onload = async () => {
-        const base64 = reader.result.split(",")[1];
         try {
+          const base64 = String(reader.result || "").split(",")[1];
           const result = await api("/api/admin/upload", {
             method: "POST",
             body: JSON.stringify({ filename: file.name, base64 })
           });
           resolve(result.path);
-        } catch (err) {
-          reject(err);
+        } catch (error) {
+          reject(error);
         }
       };
       reader.onerror = reject;
+      reader.readAsDataURL(file);
     });
   }
 
-  function textarea(label, name, value = "") {
-    return `<label class="wide-field">${escapeHtml(label)}<textarea name="${escapeHtml(name)}">${escapeHtml(value)}</textarea></label>`;
+  function panelIntro(title, description) {
+    return `
+      <div class="panel-intro">
+        <div>
+          <span>Admin workspace</span>
+          <h2>${escapeHtml(title)}</h2>
+        </div>
+        <p>${escapeHtml(description)}</p>
+      </div>
+    `;
   }
 
-  function selectEditor(name, items, selectedIndex) {
+  function sectionSave(label = "Save this section") {
+    if (!canSaveCurrentTab()) return "";
     return `
-      <select data-select="${escapeHtml(name)}">
-        ${items.map((item, index) => `<option value="${index}" ${index === selectedIndex ? "selected" : ""}>${escapeHtml(item.title || item.name || item.label || `Item ${index + 1}`)}</option>`).join("")}
-      </select>
+      <div class="section-save-row">
+        <button class="plain-button primary" data-save-section type="button">${escapeHtml(label)}</button>
+      </div>
     `;
+  }
+
+  function adminCounts() {
+    const data = state.data || {};
+    return {
+      pages: (data.pages || []).length,
+      posts: (data.posts || []).length,
+      committee: (data.committee || []).length,
+      members: (data.members || []).length,
+      gallery: (data.gallery || []).length,
+      applications: (data.applications || []).length,
+      messages: (data.messages || []).length,
+      users: (state.users || []).filter((user) => user.user_id).length
+    };
+  }
+
+  function metricCards(counts) {
+    return `
+      <div class="admin-metrics">
+        <div class="metric-card"><span>Pages</span><strong>${counts.pages}</strong></div>
+        <div class="metric-card"><span>Members</span><strong>${counts.members}</strong></div>
+        <div class="metric-card"><span>Posts</span><strong>${counts.posts}</strong></div>
+        <div class="metric-card"><span>Inbox</span><strong>${counts.applications + counts.messages}</strong></div>
+      </div>
+    `;
+  }
+
+  function tabButton(id, label, count = "") {
+    return `
+      <button class="${state.tab === id ? "active" : ""}" data-tab="${id}" type="button">
+        <span>${escapeHtml(label)}</span>
+        ${count !== "" ? `<small>${escapeHtml(count)}</small>` : ""}
+      </button>
+    `;
+  }
+
+  function availableTabs() {
+    const counts = adminCounts();
+    const tabs = [
+      ["dashboard", "Dashboard", ""],
+      ["settings", "Settings", ""],
+      ["menus", "Menus", ""],
+      ["slides", "Slides", (state.data.heroSlides || []).length],
+      ["pages", "Pages", counts.pages],
+      ["posts", "News", counts.posts],
+      ["committee", "Committee", counts.committee],
+      ["members", "Members", counts.members],
+      ["gallery", "Gallery", counts.gallery],
+      ["applications", "Applications", counts.applications],
+      ["messages", "Messages", counts.messages],
+      ["users", "Users", counts.users],
+      ["me", "My Profile", ""]
+    ];
+    return tabs.filter(([id]) => canOpenTab(id));
+  }
+
+  function adminLayout(body) {
+    const counts = adminCounts();
+    if (!canOpenTab(state.tab)) {
+      state.tab = availableTabs()[0]?.[0] || "dashboard";
+    }
+    const activeTab = availableTabs().find(([id]) => id === state.tab);
+    const activeLabel = activeTab?.[1] || "Dashboard";
+
+    adminApp.innerHTML = `
+      <div class="admin-frame">
+        <aside class="admin-sidebar">
+          <div class="admin-brand">
+            <img src="/assets/forum-logo.png" alt="">
+            <div>
+              <strong>Forum Admin</strong>
+              <span>${state.user.isAdmin ? "Super administrator" : "Assigned access"}</span>
+            </div>
+          </div>
+          <nav class="admin-tabs" aria-label="Admin navigation">
+            ${availableTabs().map(([id, label, count]) => tabButton(id, label, count)).join("")}
+          </nav>
+          <div class="admin-help">
+            <strong>Signed in</strong>
+            <span>${escapeHtml(state.user.email || "admin")}</span>
+          </div>
+        </aside>
+        <section class="admin-workspace">
+          <header class="admin-top">
+            <div>
+              <span class="admin-kicker">Dynamic website</span>
+              <h1>${escapeHtml(state.tab === "dashboard" ? "Admin Dashboard" : activeLabel)}</h1>
+              <p>Last update: ${escapeHtml(state.data.updatedAt || "")}</p>
+            </div>
+            <div class="admin-actions">
+              <a class="plain-button" href="/" target="_blank" rel="noreferrer">View site</a>
+              <button class="plain-button" id="logout" type="button">Logout</button>
+            </div>
+          </header>
+          ${state.tab === "dashboard" ? metricCards(counts) : ""}
+          <section class="admin-card">${body}<p class="admin-status" id="adminStatus" aria-live="polite"></p></section>
+        </section>
+      </div>
+    `;
+
+    adminApp.querySelectorAll("[data-tab]").forEach((button) => {
+      button.addEventListener("click", () => {
+        collectCurrentForm();
+        state.tab = button.dataset.tab;
+        renderAdmin();
+      });
+    });
+
+    document.getElementById("logout").addEventListener("click", () => {
+      storage.removeItem(tokenKey);
+      storage.removeItem(userKey);
+      state.token = null;
+      state.user = {};
+      state.data = null;
+      state.users = [];
+      renderLogin();
+    });
   }
 
   function renderLogin(message = "") {
@@ -102,14 +363,14 @@
       <section class="admin-login">
         <form class="admin-card" id="loginForm">
           <div class="admin-login-brand">
-            <img src="/assets/forum-logo.png" alt="প্রাক্তন শিক্ষার্থী ফোরাম">
+            <img src="/assets/forum-logo.png" alt="">
             <div>
-              <h1>Admin Panel</h1>
-              <p>প্রাক্তন শিক্ষার্থী ফোরাম</p>
+              <h1>Admin login</h1>
+              <p>Prakton Sikkharthi Forum</p>
             </div>
           </div>
           <div class="admin-login-fields">
-            ${field("Username", "username", "admin")}
+            ${field("Username or email", "username", "")}
             ${field("Password", "password", "", "password")}
           </div>
           <button class="skew-button admin-submit" type="submit">Login</button>
@@ -117,6 +378,7 @@
         </form>
       </section>
     `;
+
     document.getElementById("loginForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
@@ -128,19 +390,18 @@
         state.token = result.token;
         state.user = {
           isAdmin: result.isAdmin,
-          permissions: result.permissions,
+          permissions: result.permissions || [],
           mustChangePassword: result.mustChangePassword
         };
-        localStorage.setItem(tokenKey, state.token);
-        localStorage.setItem("alumniUser", JSON.stringify(state.user));
-
+        storage.setItem(tokenKey, state.token);
+        storage.setItem(userKey, JSON.stringify(state.user));
         if (result.mustChangePassword) {
           renderChangePassword();
-        } else {
-          await loadAdmin();
+          return;
         }
-      } catch {
-        renderLogin("Invalid credentials");
+        await loadAdmin();
+      } catch (error) {
+        renderLogin(error.message || "Invalid credentials");
       }
     });
   }
@@ -149,17 +410,18 @@
     adminApp.innerHTML = `
       <section class="admin-login">
         <form class="admin-card" id="changePassForm">
-          <h1>Change Password</h1>
-          <p>Please set a new password for your first login.</p>
+          <h1>Change password</h1>
+          <p>Please set a new password before continuing.</p>
           <div class="admin-login-fields">
-            ${field("New Password", "newPassword", "", "password")}
-            ${field("Confirm Password", "confirmPassword", "", "password")}
+            ${field("New password", "newPassword", "", "password")}
+            ${field("Confirm password", "confirmPassword", "", "password")}
           </div>
-          <button class="skew-button admin-submit" type="submit">Update Password</button>
+          <button class="skew-button admin-submit" type="submit">Update password</button>
           <span class="admin-status">${escapeHtml(message)}</span>
         </form>
       </section>
     `;
+
     document.getElementById("changePassForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const data = Object.fromEntries(new FormData(event.currentTarget).entries());
@@ -172,383 +434,466 @@
           method: "POST",
           body: JSON.stringify({ newPassword: data.newPassword })
         });
-        state.user.mustChangePassword = false;
-        localStorage.setItem("alumniUser", JSON.stringify(state.user));
         await loadAdmin();
-      } catch {
-        renderChangePassword("Failed to update password");
+      } catch (error) {
+        renderChangePassword(error.message || "Failed to update password");
       }
     });
   }
 
-  function tabButton(id, label, count = "") {
-    return `
-      <button class="${state.tab === id ? "active" : ""}" data-tab="${id}" type="button">
-        <span>${label}</span>
-        ${count !== "" ? `<small>${escapeHtml(count)}</small>` : ""}
-      </button>
-    `;
-  }
-
-  function adminCounts() {
-    return {
-      pages: state.data.pages.length,
-      posts: state.data.posts.length,
-      committee: state.data.committee.length,
-      members: state.data.members.length,
-      gallery: state.data.gallery.length,
-      applications: (state.data.applications || []).length,
-      messages: (state.data.messages || []).length
-    };
-  }
-
-  function metricCards(counts) {
-    return `
-      <div class="admin-metrics">
-        <div class="metric-card"><span>Pages</span><strong>${counts.pages}</strong></div>
-        <div class="metric-card"><span>Committee</span><strong>${counts.committee}</strong></div>
-        <div class="metric-card"><span>Members</span><strong>${counts.members}</strong></div>
-        <div class="metric-card"><span>Inbox</span><strong>${counts.applications + counts.messages}</strong></div>
-      </div>
-    `;
-  }
-
-  function panelIntro(title, description) {
-    return `
-      <div class="panel-intro">
-        <div>
-          <span>Content Manager</span>
-          <h2>${escapeHtml(title)}</h2>
-        </div>
-        <p>${escapeHtml(description)}</p>
-      </div>
-    `;
-  }
-
-  function adminLayout(body) {
+  function renderDashboard() {
     const counts = adminCounts();
-    adminApp.innerHTML = `
-      <div class="admin-frame">
-        <aside class="admin-sidebar">
-          <div class="admin-brand">
-            <img src="/assets/forum-logo.png" alt="প্রাক্তন শিক্ষার্থী ফোরাম">
-            <div>
-              <strong>Forum Admin</strong>
-              <span>Website control</span>
-            </div>
-          </div>
-          <nav class="admin-tabs" aria-label="Admin navigation">
-            ${(state.user.isAdmin || hasPerm("edit_any")) ? tabButton("settings", "Settings") : ""}
-            ${(state.user.isAdmin || hasPerm("edit_any")) ? tabButton("pages", "Pages", counts.pages) : ""}
-            ${(state.user.isAdmin || hasPerm("add_post") || hasPerm("edit_any")) ? tabButton("posts", "News", counts.posts) : ""}
-            ${(state.user.isAdmin || hasPerm("edit_any")) ? tabButton("committee", "Committee", counts.committee) : ""}
-            ${(state.user.isAdmin || hasPerm("add_member") || hasPerm("edit_any")) ? tabButton("members", "Members", counts.members) : ""}
-            ${(state.user.isAdmin || hasPerm("edit_any")) ? tabButton("gallery", "Gallery", counts.gallery) : ""}
-            ${(state.user.isAdmin || hasPerm("view_submissions")) ? tabButton("applications", "Applications", counts.applications) : ""}
-            ${(state.user.isAdmin || hasPerm("view_submissions")) ? tabButton("messages", "Messages", counts.messages) : ""}
-            ${state.user.isAdmin ? tabButton("users", "Admin") : ""}
-            ${tabButton("me", "My Profile")}
-          </nav>
-          <div class="admin-help">
-            <strong>Tip</strong>
-            <span>Save after editing any tab to publish changes.</span>
-          </div>
-        </aside>
-        <section class="admin-workspace">
-          <header class="admin-top">
-            <div>
-              <span class="admin-kicker">Dynamic Website</span>
-              <h1>Admin Panel</h1>
-              <p>Last update: ${escapeHtml(state.data.updatedAt || "")}</p>
-            </div>
-            <div class="admin-actions">
-              <a class="plain-button" href="/" target="_blank">View Site</a>
-              <button class="plain-button primary" id="saveAll" type="button">Save Changes</button>
-              <button class="plain-button" id="logout" type="button">Logout</button>
-            </div>
-          </header>
-          ${metricCards(counts)}
-          <section class="admin-card">${body}<p class="admin-status" id="adminStatus"></p></section>
-        </section>
+    return `
+      <div class="admin-dashboard-hero">
+        <div>
+          <span>Website control center</span>
+          <h2>Manage content, members, career posts, and forum activity.</h2>
+          <p>Each editor has its own save button, so updates stay scoped to the section you are working on.</p>
+        </div>
+        <strong>${counts.pages + counts.posts + counts.committee + counts.members + counts.gallery}</strong>
+      </div>
+      <div class="dashboard-grid">
+        <article class="dashboard-panel"><span>Pages</span><strong>${counts.pages}</strong><p>Includes Career and Forum pages.</p></article>
+        <article class="dashboard-panel"><span>Posts</span><strong>${counts.posts}</strong><p>News, Notice, and Career circulars.</p></article>
+        <article class="dashboard-panel"><span>Members</span><strong>${counts.members}</strong><p>Registered profiles and account links.</p></article>
+        <article class="dashboard-panel"><span>Inbox</span><strong>${counts.applications + counts.messages}</strong><p>Applications and contact messages.</p></article>
+        <article class="dashboard-panel"><span>Storage</span><strong>/assets</strong><p>Images upload to the local file system.</p></article>
+      </div>
+      <div class="quick-actions">
+        ${availableTabs()
+        .filter(([id]) => !["dashboard", "me"].includes(id))
+        .map(([id, label]) => `<button class="plain-button" data-tab="${id}" type="button">${escapeHtml(label)}</button>`)
+        .join("")}
       </div>
     `;
-    adminApp.querySelectorAll("[data-tab]").forEach((button) => {
-      button.addEventListener("click", () => {
-        collectCurrentForm();
-        state.tab = button.dataset.tab;
-        renderAdmin();
-      });
-    });
-    document.getElementById("saveAll").addEventListener("click", save);
-    document.getElementById("logout").addEventListener("click", () => {
-      localStorage.removeItem(tokenKey);
-      localStorage.removeItem("alumniUser");
-      state.token = null;
-      state.user = {};
-      renderLogin();
-    });
-  }
-
-  function hasPerm(p) {
-    if (state.user.isAdmin) return true;
-    return Array.isArray(state.user.permissions) && state.user.permissions.includes(p);
-  }
-
-  function renderMe() {
-    // Find the member record for the current user
-    const member = state.data.members.find(m => m.id === state.user.member_id) || {};
-    return `
-      ${panelIntro("My Profile", "Update your own information as it appears in the members list.")}
-      <form class="admin-form" id="meForm">
-        <div class="form-grid">
-          ${field("Name", "name", member.name)}
-          ${field("Email", "email", member.email)}
-          ${field("Phone", "phone", member.phone)}
-          ${field("Address", "address", member.address)}
-          ${field("Batch", "batch", member.batch)}
-          ${field("Type", "type", member.type)}
-        </div>
-        <button class="skew-button admin-submit" type="submit" style="margin-top: 2rem">Update My Info</button>
-      </form>
-    `;
-    // Event listener for meForm will be in bindAdmin
-  }
-
-  function renderUsers() {
-    const PERMISSIONS = [
-      { key: "add_member", label: "Add Member" },
-      { key: "add_post", label: "Add News/Notice" },
-      { key: "upload_image", label: "Upload Images" },
-      { key: "view_submissions", label: "View Applications" },
-      { key: "edit_any", label: "Edit Everything" }
-    ];
-
-    const rows = state.users.map(u => {
-      const hasAccount = !!u.user_id;
-      const permChecks = PERMISSIONS.map(p => `
-        <label class="perm-check">
-          <input type="checkbox" class="perm-cb"
-            data-member-id="${escapeHtml(String(u.member_id))}"
-            data-user-id="${escapeHtml(u.user_id || '')}"
-            data-perm="${p.key}"
-            ${hasAccount && u.permissions.includes(p.key) ? "checked" : ""}
-            ${!hasAccount ? "disabled" : ""}>
-          ${p.label}
-        </label>`).join("");
-
-      return `
-        <tr class="${hasAccount ? "" : "no-account"}">
-          <td><strong>${escapeHtml(u.name || "")}</strong></td>
-          <td>
-            <input class="email-inp" data-member-id="${escapeHtml(String(u.member_id))}" type="email" placeholder="Email" value="${escapeHtml(u.email || "")}" style="width:100%">
-          </td>
-          <td>${escapeHtml(u.phone || "—")}</td>
-          <td>${hasAccount
-          ? `<span class="badge badge-active">✔ Active</span>`
-          : `<span class="badge badge-none">✗ No Account</span>`}
-          </td>
-          <td class="perm-checks">${permChecks}</td>
-          <td>
-            ${!hasAccount
-          ? `<button class="plain-button create-user" data-member-id="${escapeHtml(String(u.member_id))}">Create Account</button>`
-          : `<button class="plain-button save-perms" data-user-id="${escapeHtml(u.user_id)}" data-member-id="${escapeHtml(String(u.member_id))}">Save Perms</button>
-                 <button class="plain-button" style="margin-top:4px" data-reset-user="${escapeHtml(u.user_id)}">Reset Pass</button>`
-        }
-          </td>
-        </tr>`;
-    });
-
-    return `
-      ${panelIntro("User Management", "Create accounts for members and assign permissions like Django admin.")}
-      <style>
-        .no-account { opacity: 0.7; background: #fafaf7; }
-        .badge { padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; }
-        .badge-active { background: #d4edda; color: #155724; }
-        .badge-none { background: #f8d7da; color: #721c24; }
-        .perm-checks { display: flex; flex-direction: column; gap: 4px; }
-        .perm-check { display: flex; align-items: center; gap: 6px; font-size: 0.85em; cursor: pointer; }
-        .admin-table td { vertical-align: middle; padding: 10px 8px; }
-        .email-inp { border: 1px solid #ddd; border-radius: 4px; padding: 4px 6px; }
-      </style>
-      <div class="table-wrap" style="overflow-x:auto">
-        <table class="members-table admin-table" style="min-width:900px">
-          <thead><tr>
-            <th>Name</th><th>Email</th><th>Phone</th><th>Status</th><th>Permissions</th><th>Actions</th>
-          </tr></thead>
-          <tbody>${rows.join("")}</tbody>
-        </table>
-      </div>`;
   }
 
   function renderSettings() {
-    const settings = state.data.settings;
+    const settings = state.data.settings || {};
     return `
-      ${panelIntro("Site Settings", "Update identity, contact details, logos, bank information, and the notice ticker.")}
+      ${panelIntro("Site settings", "Manage identity, contact details, logos, footer artwork, and notice text.")}
       <form class="admin-form" data-editor="settings">
         <div class="form-grid">
-          ${field("Site Name", "siteName", settings.siteName)}
-          ${field("Bangla Site Name", "siteNameBn", settings.siteNameBn)}
-          ${field("Short Name", "shortName", settings.shortName)}
-          ${field("Email", "email", settings.email)}
+          ${field("Site name", "siteName", settings.siteName)}
+          ${field("Bangla site name", "siteNameBn", settings.siteNameBn)}
+          ${field("Short name", "shortName", settings.shortName)}
+          ${field("Email", "email", settings.email, "email")}
           ${field("Phone", "phone", settings.phone)}
           ${field("Address", "address", settings.address)}
-          ${field("Logo URL", "logo", settings.logo)}
-          ${field("Footer Logo URL", "footerLogo", settings.footerLogo)}
-          ${field("Footer Background URL", "footerBackground", settings.footerBackground)}
-          ${field("Bank Title", "bankTitle", settings.bankTitle)}
-          ${textarea("Notice Text", "noticeText", settings.noticeText)}
-          ${textarea("Bank Lines", "bankLines", settings.bankLines.join("\n"))}
+          ${field("Logo path", "logo", settings.logo)}
+          ${field("Footer logo path", "footerLogo", settings.footerLogo)}
+          ${field("Footer background", "footerBackground", settings.footerBackground)}
+          ${field("Bank/contact title", "bankTitle", settings.bankTitle)}
+          ${textarea("Notice text", "noticeText", settings.noticeText)}
+          ${textarea("Bank/contact lines", "bankLines", (settings.bankLines || []).join("\n"))}
         </div>
       </form>
+      ${sectionSave("Save settings")}
+    `;
+  }
+
+  function listRow(type, item, index, fields) {
+    return `
+      <div class="list-row" data-list-row="${escapeHtml(type)}" data-index="${index}">
+        <div class="list-row-fields">
+          ${fields.map((spec) => {
+      const isImage = /image|logo|background/i.test(spec.key);
+      return `
+              <label class="admin-field">
+                <span>${escapeHtml(spec.label)}</span>
+                <div class="${isImage ? "field-with-action" : ""}">
+                  <input data-list="${escapeHtml(type)}" data-index="${index}" data-key="${escapeHtml(spec.key)}" value="${escapeHtml(item[spec.key] || "")}">
+                  ${isImage ? `<button class="plain-button upload-trigger" type="button">Choose</button>` : ""}
+                </div>
+              </label>
+            `;
+    }).join("")}
+        </div>
+        <div class="row-actions">
+          <button class="plain-button" data-move-list="${escapeHtml(type)}" data-index="${index}" data-direction="-1" type="button">Up</button>
+          <button class="plain-button" data-move-list="${escapeHtml(type)}" data-index="${index}" data-direction="1" type="button">Down</button>
+          <button class="plain-button danger" data-remove-list="${escapeHtml(type)}" data-index="${index}" type="button">Delete</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function editableList(title, description, type, fields) {
+    const items = state.data[type] || [];
+    return `
+      <section class="nested-panel">
+        <div class="nested-panel-head">
+          <div>
+            <h3>${escapeHtml(title)}</h3>
+            <p>${escapeHtml(description)}</p>
+          </div>
+          <button class="plain-button" data-add-list="${escapeHtml(type)}" type="button">Add item</button>
+        </div>
+        <div class="admin-list">
+          ${items.map((item, index) => listRow(type, item, index, fields)).join("") || `<p class="empty-admin">No items yet.</p>`}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderMenus() {
+    return `
+      ${panelIntro("Menus", "Create, edit, reorder, and delete primary navigation and top bar links.")}
+      <div class="stacked-panels">
+        ${editableList("Primary navigation", "Main website menu shown in the header.", "navigation", [
+      { key: "label", label: "Label" },
+      { key: "path", label: "Path" }
+    ])}
+        ${editableList("Top links", "Secondary links shown in the top bar and footer.", "topLinks", [
+      { key: "label", label: "Label" },
+      { key: "path", label: "Path" }
+      ])}
+      </div>
+      ${sectionSave("Save menus")}
+    `;
+  }
+
+  function renderSlides() {
+    return `
+      ${panelIntro("Hero slides", "Manage the home page hero images and headline text.")}
+      ${editableList("Slides", "Each slide can use a local /assets image path.", "heroSlides", [
+      { key: "image", label: "Image path" },
+      { key: "eyebrow", label: "Eyebrow" },
+      { key: "title", label: "Title" }
+    ])}
+      ${sectionSave("Save slides")}
+    `;
+  }
+
+  function itemLabel(item, index) {
+    return item.title || item.name || item.label || item.key || `Item ${index + 1}`;
+  }
+
+  function selectEditor(type, selectedIndex) {
+    const items = state.data[type] || [];
+    if (!items.length) {
+      return `<select disabled><option>No items</option></select>`;
+    }
+    return `
+      <select data-select="${escapeHtml(type)}">
+        ${items.map((item, index) => `<option value="${index}" ${index === selectedIndex ? "selected" : ""}>${escapeHtml(itemLabel(item, index))}</option>`).join("")}
+      </select>
+    `;
+  }
+
+  function selectedIndex(type) {
+    const items = state.data[type] || [];
+    if (!items.length) return 0;
+    const next = Math.min(state.selected[type] || 0, items.length - 1);
+    state.selected[type] = Math.max(0, next);
+    return state.selected[type];
+  }
+
+  function editorToolbar(type) {
+    const index = selectedIndex(type);
+    return `
+      <div class="editor-toolbar">
+        ${selectEditor(type, index)}
+        <button class="plain-button" data-add="${escapeHtml(type)}" type="button">Add</button>
+        <button class="plain-button" data-duplicate="${escapeHtml(type)}" type="button">Duplicate</button>
+        <button class="plain-button danger" data-delete="${escapeHtml(type)}" type="button">Delete</button>
+      </div>
     `;
   }
 
   function renderPages() {
-    const index = Math.min(state.selected.pages, state.data.pages.length - 1);
-    const page = state.data.pages[index] || {};
+    const index = selectedIndex("pages");
+    const page = (state.data.pages || [])[index] || {};
     return `
-      ${panelIntro("Pages", "Edit page titles, routes, content paragraphs, images, and page-specific display options.")}
-      <div class="editor-toolbar">
-        ${selectEditor("pages", state.data.pages, index)}
-      </div>
+      ${panelIntro("Pages", "Insert, update, and delete site pages, routes, render modes, images, downloads, and body content.")}
+      ${editorToolbar("pages")}
       <form class="admin-form" data-editor="pages" data-index="${index}">
         <div class="form-grid">
+          ${field("Database id", "id", page.id || "", "text", { readonly: true })}
           ${field("Key", "key", page.key)}
           ${field("Path", "path", page.path)}
           ${field("Title", "title", page.title)}
           ${field("Subtitle", "subtitle", page.subtitle || "")}
-          ${field("Render Type", "render", page.render)}
-          ${field("Image", "image", page.image || "")}
-          ${field("Download Label", "downloadLabel", page.downloadLabel || "")}
+          ${selectField("Render type", "render", page.render, ["home", "about", "simple", "committee", "members", "posts", "career", "forum", "download", "gallery", "memberForm", "contact", "restricted", "account"])}
+          ${field("Image path", "image", page.image || "")}
+          ${field("Download label", "downloadLabel", page.downloadLabel || "")}
           ${field("Download URL", "downloadUrl", page.downloadUrl || "")}
-          ${field("Post Filter", "filter", page.filter || "")}
-          ${textarea("Body Paragraphs", "body", multiline(page.body))}
+          ${field("Post filter", "filter", page.filter || "")}
+          ${textarea("Body paragraphs", "body", multiline(page.body))}
         </div>
       </form>
+      ${sectionSave("Save page")}
     `;
   }
 
   function renderPosts() {
-    const index = Math.min(state.selected.posts, state.data.posts.length - 1);
-    const post = state.data.posts[index] || {};
+    const index = selectedIndex("posts");
+    const post = (state.data.posts || [])[index] || {};
     return `
-      ${panelIntro("News & Notice", "Create and edit news or notice posts that appear on the public listing pages.")}
-      <div class="editor-toolbar">
-        ${selectEditor("posts", state.data.posts, index)}
-        <button class="plain-button" data-add="posts" type="button">Add</button>
-        <button class="plain-button danger" data-delete="posts" type="button">Delete</button>
-      </div>
+      ${panelIntro("News and notices", "Create, edit, and delete posts that appear on News and Notice pages.")}
+      ${editorToolbar("posts")}
       <form class="admin-form" data-editor="posts" data-index="${index}">
         <div class="form-grid">
+          ${field("Database id", "id", post.id || "", "text", { readonly: true })}
           ${field("Title", "title", post.title)}
-          ${field("ID", "id", post.id)}
           ${field("Slug", "slug", post.slug)}
           ${field("Path", "path", post.path)}
-          ${field("Category", "category", post.category)}
+          ${selectField("Category", "category", post.category, ["News", "Notice", "Career"])}
           ${field("Date", "date", post.date, "date")}
-          ${field("Image", "image", post.image)}
-          ${textarea("Excerpt", "excerpt", post.excerpt)}
-          ${textarea("Body Paragraphs", "body", multiline(post.body))}
+          ${field("Image path", "image", post.image)}
+          ${textarea("Excerpt", "excerpt", post.excerpt, { wide: true })}
+          ${textarea("Body paragraphs", "body", multiline(post.body))}
         </div>
       </form>
+      ${sectionSave("Save post")}
     `;
   }
 
   function renderCommittee() {
-    const index = Math.min(state.selected.committee, state.data.committee.length - 1);
-    const person = state.data.committee[index] || {};
+    const index = selectedIndex("committee");
+    const person = (state.data.committee || [])[index] || {};
     return `
-      ${panelIntro("Committee", "Add members for any year. The public committee page automatically filters by this year field.")}
-      <div class="editor-toolbar">
-        ${selectEditor("committee", state.data.committee, index)}
-        <button class="plain-button" data-add="committee" type="button">Add</button>
-        <button class="plain-button danger" data-delete="committee" type="button">Delete</button>
-      </div>
+      ${panelIntro("Committee", "Maintain committee people by year with profile image, role, biography, and message.")}
+      ${editorToolbar("committee")}
       <form class="admin-form" data-editor="committee" data-index="${index}">
         <div class="form-grid">
+          ${field("Database id", "id", person.id || "", "text", { readonly: true })}
           ${field("Name", "name", person.name)}
           ${field("Role", "role", person.role)}
-          ${field("Year", "year", person.year || "২০২২")}
+          ${field("Year", "year", person.year)}
           ${field("Batch", "passingYear", person.passingYear || "")}
-          ${field("Mobile", "phone", person.phone || "")}
-          ${field("Image", "image", person.image)}
+          ${field("Phone", "phone", person.phone || "")}
+          ${field("Image path", "image", person.image)}
+          ${textarea("Biography", "biography", person.biography || "")}
+          ${textarea("Message", "message", person.message || "")}
         </div>
       </form>
+      ${sectionSave("Save committee")}
     `;
   }
 
   function renderMembers() {
-    const index = Math.min(state.selected.members, state.data.members.length - 1);
-    const member = state.data.members[index] || {};
+    const index = selectedIndex("members");
+    const member = (state.data.members || [])[index] || {};
     return `
-      ${panelIntro("Forum Members", "Maintain the public members table with batch, address, and membership type.")}
-      <div class="editor-toolbar">
-        ${selectEditor("members", state.data.members, index)}
-        <button class="plain-button" data-add="members" type="button">Add</button>
-        <button class="plain-button danger" data-delete="members" type="button">Delete</button>
-      </div>
+      ${panelIntro("Members", "Create, update, and delete member profiles used by the public members table and user accounts.")}
+      ${editorToolbar("members")}
       <form class="admin-form" data-editor="members" data-index="${index}">
         <div class="form-grid">
+          ${field("Database id", "id", member.id || "", "text", { readonly: true })}
           ${field("Name", "name", member.name)}
-          ${field("Address", "address", member.address)}
-          ${field("Batch", "batch", member.batch)}
-          ${field("Type", "type", member.type)}
+          ${field("Email", "email", member.email || "", "email")}
+          ${field("Phone", "phone", member.phone || "")}
+          ${field("Address", "address", member.address || "")}
+          ${field("Batch", "batch", member.batch || "")}
+          ${field("Type", "type", member.type || "")}
+          ${field("Image path", "image", member.image || "")}
         </div>
       </form>
+      ${sectionSave("Save member")}
     `;
   }
 
   function renderGallery() {
-    const index = Math.min(state.selected.gallery, state.data.gallery.length - 1);
-    const item = state.data.gallery[index] || {};
+    const index = selectedIndex("gallery");
+    const item = (state.data.gallery || [])[index] || {};
     return `
-      ${panelIntro("Gallery", "Manage gallery photos and captions shown on the gallery page.")}
-      <div class="editor-toolbar">
-        ${selectEditor("gallery", state.data.gallery, index)}
-        <button class="plain-button" data-add="gallery" type="button">Add</button>
-        <button class="plain-button danger" data-delete="gallery" type="button">Delete</button>
-      </div>
+      ${panelIntro("Gallery", "Upload local image paths and captions for the public gallery page.")}
+      ${editorToolbar("gallery")}
       <form class="admin-form" data-editor="gallery" data-index="${index}">
         <div class="form-grid">
+          ${field("Database id", "id", item.id || "", "text", { readonly: true })}
           ${field("Title", "title", item.title)}
-          ${field("Image", "image", item.image)}
+          ${field("Image path", "image", item.image)}
         </div>
       </form>
+      ${sectionSave("Save gallery")}
     `;
+  }
+
+  function submissionColumns(type) {
+    return type === "applications"
+      ? [
+        ["status", "Status"],
+        ["name", "Name"],
+        ["nameBn", "Bangla name"],
+        ["nameEn", "English name"],
+        ["email", "Email"],
+        ["phone", "Phone"],
+        ["mobile", "Mobile"],
+        ["batch", "Batch"],
+        ["memberType", "Member type"],
+        ["amount", "Amount"],
+        ["message", "Message"]
+      ]
+      : [
+        ["status", "Status"],
+        ["name", "Name"],
+        ["email", "Email"],
+        ["phone", "Phone"],
+        ["subject", "Subject"],
+        ["message", "Message"]
+      ];
   }
 
   function renderSubmissions(type) {
     const items = state.data[type] || [];
-    const columns = type === "applications"
-      ? ["createdAt", "status", "nameBn", "mobile", "email", "memberType", "amount"]
-      : ["createdAt", "status", "name", "email", "subject", "message"];
+    const columns = submissionColumns(type);
+    const title = type === "applications" ? "Applications" : "Messages";
+    const description = type === "applications"
+      ? "Review, update, and delete membership applications."
+      : "Review, update, and delete contact messages.";
+
     return `
-      ${panelIntro(type === "applications" ? "Applications" : "Messages", type === "applications" ? "Review membership applications submitted from the public form." : "Review contact messages submitted from the public form.")}
+      ${panelIntro(title, description)}
       <div class="table-wrap">
-        <table class="members-table admin-table">
-          <thead><tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}<th></th></tr></thead>
+        <table class="members-table admin-table submission-table">
+          <thead>
+            <tr>
+              <th>Created</th>
+              ${columns.map(([, label]) => `<th>${escapeHtml(label)}</th>`).join("")}
+              <th>Actions</th>
+            </tr>
+          </thead>
           <tbody>
-            ${items
-        .map(
-          (item, index) => `
-                  <tr>
-                    ${columns
-              .map((column) => `<td><input data-submission="${type}" data-index="${index}" data-key="${column}" value="${escapeHtml(item[column] || "")}"></td>`)
-              .join("")}
-                    <td><button class="plain-button danger" data-remove-submission="${type}" data-index="${index}" type="button">Delete</button></td>
-                  </tr>
-                `
-        )
-        .join("") || `<tr><td colspan="${columns.length + 1}">No records</td></tr>`}
+            ${items.map((item, index) => `
+              <tr data-submission-row="${escapeHtml(type)}" data-id="${escapeHtml(item.id || "")}" data-index="${index}">
+                <td>${escapeHtml(item.createdAt || item.created_at || "")}</td>
+                ${columns.map(([key]) => key === "status"
+        ? `<td><select data-submission-field="${key}"><option ${item.status === "new" ? "selected" : ""}>new</option><option ${item.status === "reviewed" ? "selected" : ""}>reviewed</option><option ${item.status === "approved" ? "selected" : ""}>approved</option><option ${item.status === "archived" ? "selected" : ""}>archived</option></select></td>`
+        : `<td><input data-submission-field="${key}" value="${escapeHtml(item[key] || "")}"></td>`
+      ).join("")}
+                <td class="row-action-cell">
+                  <button class="plain-button" data-save-submission="${escapeHtml(type)}" type="button">Save</button>
+                  <button class="plain-button danger" data-delete-submission="${escapeHtml(type)}" type="button">Delete</button>
+                </td>
+              </tr>
+            `).join("") || `<tr><td colspan="${columns.length + 2}">No records</td></tr>`}
           </tbody>
         </table>
       </div>
     `;
   }
 
+  function permissionChecks(permissions = [], prefix = "perm", disabled = false) {
+    const normalized = normalizePermissions(permissions);
+    return `
+      <div class="permission-grid">
+        ${PERMISSIONS.map((permission) => `
+          <label class="perm-check">
+            <input type="checkbox" class="${prefix}-cb" value="${escapeHtml(permission.key)}" ${normalized.has(permission.key) ? "checked" : ""} ${disabled ? "disabled" : ""}>
+            <span>${escapeHtml(permission.label)}</span>
+          </label>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  function renderUsers() {
+    const memberOptions = (state.data.members || [])
+      .map((member) => `<option value="${escapeHtml(member.id || "")}">${escapeHtml(member.name || "Member")} ${member.email ? `(${escapeHtml(member.email)})` : ""}</option>`)
+      .join("");
+
+    const rows = (state.users || []).map((user) => {
+      const hasAccount = !!user.user_id;
+      return `
+        <tr class="${hasAccount ? "" : "no-account"}">
+          <td>
+            <strong>${escapeHtml(user.name || user.email || "")}</strong>
+            <small>${user.member_id ? `Member #${escapeHtml(user.member_id)}` : "Standalone user"}</small>
+          </td>
+          <td>
+            <input class="email-inp" data-member-id="${escapeHtml(user.member_id || "")}" value="${escapeHtml(user.email || "")}" ${hasAccount ? "readonly" : ""}>
+          </td>
+          <td>${escapeHtml(user.phone || "")}</td>
+          <td>${hasAccount ? `<span class="badge badge-active">Active</span>` : `<span class="badge badge-none">No account</span>`}</td>
+          <td>
+            <label class="perm-check admin-toggle">
+              <input type="checkbox" class="user-admin-cb" data-user-id="${escapeHtml(user.user_id || "")}" ${user.is_admin ? "checked" : ""} ${!hasAccount ? "disabled" : ""}>
+              <span>Full admin</span>
+            </label>
+            ${permissionChecks(user.permissions || [], `perm-${user.user_id || user.member_id || "new"}`, !hasAccount)
+        .replaceAll(`class="perm-${user.user_id || user.member_id || "new"}-cb"`, `class="perm-cb" data-user-id="${escapeHtml(user.user_id || "")}"`)}
+          </td>
+          <td class="row-action-cell">
+            ${hasAccount
+          ? `<button class="plain-button save-perms" data-user-id="${escapeHtml(user.user_id)}" type="button">Save</button>
+                 <button class="plain-button" data-reset-user="${escapeHtml(user.user_id)}" type="button">Reset password</button>`
+          : `<button class="plain-button create-user" data-member-id="${escapeHtml(user.member_id || "")}" type="button">Create account</button>`}
+          </td>
+        </tr>
+      `;
+    }).join("");
+
+    return `
+      ${panelIntro("Users and permissions", "Create user accounts, reset passwords, and assign permissions for each admin menu.")}
+      <form class="admin-form new-user-form" id="newUserForm">
+        <div class="nested-panel-head">
+          <div>
+            <h3>Create user</h3>
+            <p>Create a standalone admin user or link the user to an existing member profile.</p>
+          </div>
+          <button class="plain-button primary" type="submit">Create user</button>
+        </div>
+        <div class="form-grid">
+          <label class="admin-field">
+            <span>Linked member</span>
+            <select name="memberId">
+              <option value="">Standalone account</option>
+              ${memberOptions}
+            </select>
+          </label>
+          ${field("Email", "email", "", "email")}
+          ${field("Phone", "phone", "")}
+          ${field("Initial password", "password", "", "password")}
+          <label class="perm-check admin-toggle wide-field">
+            <input type="checkbox" name="isAdmin" value="1">
+            <span>Full admin account</span>
+          </label>
+          <div class="wide-field">${permissionChecks([], "new-perm")}</div>
+        </div>
+      </form>
+      <div class="table-wrap users-wrap">
+        <table class="members-table admin-table users-table">
+          <thead>
+            <tr><th>Name</th><th>Email</th><th>Phone</th><th>Status</th><th>Permissions</th><th>Actions</th></tr>
+          </thead>
+          <tbody>${rows || `<tr><td colspan="6">No users or members found.</td></tr>`}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderMe() {
+    const member = (state.data.members || []).find((item) => String(item.id) === String(state.user.member_id));
+    if (!member) {
+      return `
+        ${panelIntro("My profile", "This account is not linked to a member profile.")}
+        <p class="empty-admin">Ask a super administrator to link this user to a member record.</p>
+      `;
+    }
+
+    return `
+      ${panelIntro("My profile", "Update the member information linked to your user account.")}
+      <form class="admin-form" id="meForm">
+        <div class="form-grid">
+          ${field("Name", "name", member.name)}
+          ${field("Email", "email", member.email || "", "email")}
+          ${field("Phone", "phone", member.phone || "")}
+          ${field("Address", "address", member.address || "")}
+          ${field("Batch", "batch", member.batch || "")}
+          ${field("Type", "type", member.type || "")}
+          ${field("Image path", "image", member.image || "")}
+        </div>
+        <button class="skew-button admin-submit" type="submit">Update profile</button>
+      </form>
+    `;
+  }
+
   function collectCurrentForm() {
     const form = adminApp.querySelector("[data-editor]");
     if (!form) return;
+
     const editor = form.dataset.editor;
     const values = Object.fromEntries(new FormData(form).entries());
 
@@ -562,28 +907,37 @@
     }
 
     const index = Number(form.dataset.index);
-    if (editor === "pages") {
-      state.data.pages[index] = {
-        ...state.data.pages[index],
-        ...values,
-        body: splitLines(values.body)
-      };
-      return;
-    }
+    if (!state.data[editor] || !state.data[editor][index]) return;
 
-    if (editor === "posts") {
-      state.data.posts[index] = {
-        ...state.data.posts[index],
-        ...values,
-        body: splitLines(values.body)
-      };
-      return;
+    const next = { ...state.data[editor][index], ...values };
+    if (editor === "pages" || editor === "posts") {
+      next.body = splitParagraphs(values.body);
+      if (editor === "posts") {
+        next.slug = values.slug || slugify(values.title, "post");
+        next.path = normalizePath(values.path || next.slug);
+      }
     }
+    state.data[editor][index] = next;
+  }
 
-    state.data[editor][index] = {
-      ...state.data[editor][index],
-      ...values
-    };
+  function templateFor(type) {
+    const now = Date.now();
+    if (type === "navigation") return { label: "New menu", path: "/new-page/" };
+    if (type === "topLinks") return { label: "New link", path: "/new-link/" };
+    if (type === "heroSlides") return { image: "/assets/forum-logo.png", eyebrow: "Welcome", title: "New slide" };
+    if (type === "pages") return { key: `page-${now}`, path: `/page-${now}/`, title: "New page", subtitle: "", render: "simple", image: "", body: [""] };
+    if (type === "posts") return { slug: `post-${now}`, path: `/post-${now}/`, title: "New post", category: "News", date: today(), image: "/assets/forum-logo.png", excerpt: "", body: [""] };
+    if (type === "committee") return { name: "New member", role: "Member", year: "2026", passingYear: "", phone: "", image: "/assets/forum-logo.png", biography: "", message: "" };
+    if (type === "members") return { name: "New member", email: "", phone: "", address: "", batch: "", type: "General", image: "" };
+    if (type === "gallery") return { title: "Gallery image", image: "/assets/forum-logo.png" };
+    return {};
+  }
+
+  function moveItem(list, index, direction) {
+    const items = state.data[list] || [];
+    const target = index + direction;
+    if (target < 0 || target >= items.length) return;
+    [items[index], items[target]] = [items[target], items[index]];
   }
 
   function bindAdmin() {
@@ -595,18 +949,63 @@
       });
     });
 
+    adminApp.querySelectorAll("[data-list]").forEach((input) => {
+      input.addEventListener("input", () => {
+        const items = state.data[input.dataset.list] || [];
+        const item = items[Number(input.dataset.index)];
+        if (item) item[input.dataset.key] = input.value;
+      });
+    });
+
+    adminApp.querySelectorAll("[data-add-list]").forEach((button) => {
+      button.addEventListener("click", () => {
+        collectCurrentForm();
+        const type = button.dataset.addList;
+        state.data[type] = state.data[type] || [];
+        state.data[type].push(templateFor(type));
+        renderAdmin();
+      });
+    });
+
+    adminApp.querySelectorAll("[data-remove-list]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const type = button.dataset.removeList;
+        state.data[type].splice(Number(button.dataset.index), 1);
+        renderAdmin();
+      });
+    });
+
+    adminApp.querySelectorAll("[data-move-list]").forEach((button) => {
+      button.addEventListener("click", () => {
+        moveItem(button.dataset.moveList, Number(button.dataset.index), Number(button.dataset.direction));
+        renderAdmin();
+      });
+    });
+
     adminApp.querySelectorAll("[data-add]").forEach((button) => {
       button.addEventListener("click", () => {
         collectCurrentForm();
         const type = button.dataset.add;
-        const templates = {
-          posts: { id: `post-${Date.now()}`, title: "নতুন পোস্ট", slug: "new-post", path: "/new-post/", category: "News", date: new Date().toISOString().slice(0, 10), image: "/assets/news-committee.jpg", excerpt: "", body: [""] },
-          committee: { name: "নতুন সদস্য", role: "সদস্য", year: "২০২৬", passingYear: "", phone: "", image: "/assets/forum-logo.png" },
-          members: { name: "নতুন সদস্য", address: "", batch: "", type: "সাধারণ" },
-          gallery: { title: "Gallery", image: "/assets/gallery-01.jpg" }
-        };
-        state.data[type].push(templates[type]);
+        state.data[type] = state.data[type] || [];
+        state.data[type].push(templateFor(type));
         state.selected[type] = state.data[type].length - 1;
+        renderAdmin();
+      });
+    });
+
+    adminApp.querySelectorAll("[data-duplicate]").forEach((button) => {
+      button.addEventListener("click", () => {
+        collectCurrentForm();
+        const type = button.dataset.duplicate;
+        const index = selectedIndex(type);
+        const copy = JSON.parse(JSON.stringify(state.data[type][index] || templateFor(type)));
+        delete copy.id;
+        if (copy.title) copy.title = `${copy.title} copy`;
+        if (copy.key) copy.key = `${copy.key}-${Date.now()}`;
+        if (copy.slug) copy.slug = `${copy.slug}-${Date.now()}`;
+        if (copy.path) copy.path = normalizePath(`${copy.path.replace(/\/$/, "")}-${Date.now()}`);
+        state.data[type].splice(index + 1, 0, copy);
+        state.selected[type] = index + 1;
         renderAdmin();
       });
     });
@@ -615,146 +1014,191 @@
       button.addEventListener("click", () => {
         collectCurrentForm();
         const type = button.dataset.delete;
-        const index = state.selected[type];
+        const index = selectedIndex(type);
+        if (!state.data[type]?.length) return;
         state.data[type].splice(index, 1);
         state.selected[type] = Math.max(0, index - 1);
         renderAdmin();
       });
     });
 
-    adminApp.querySelectorAll("[data-submission]").forEach((input) => {
-      input.addEventListener("input", () => {
-        const items = state.data[input.dataset.submission];
-        items[Number(input.dataset.index)][input.dataset.key] = input.value;
-      });
-    });
-
-    adminApp.querySelectorAll("[data-remove-submission]").forEach((button) => {
+    adminApp.querySelectorAll(".upload-trigger").forEach((button) => {
       button.addEventListener("click", () => {
-        const items = state.data[button.dataset.removeSubmission];
-        items.splice(Number(button.dataset.index), 1);
-        renderAdmin();
-      });
-    });
-
-    adminApp.querySelectorAll(".upload-trigger").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const input = document.createElement("input");
-        input.type = "file";
-        input.accept = "image/*";
-        input.onchange = async () => {
-          if (!input.files[0]) return;
-          const status = document.getElementById("adminStatus");
-          status.textContent = "Uploading...";
+        const fileInput = document.createElement("input");
+        fileInput.type = "file";
+        fileInput.accept = "image/*";
+        fileInput.onchange = async () => {
+          const file = fileInput.files?.[0];
+          if (!file) return;
+          setStatus("Uploading image...");
           try {
-            const path = await uploadImage(input.files[0]);
-            const target = btn.parentNode.querySelector("input");
-            target.value = path;
-            status.textContent = "Uploaded. Remember to Save Changes.";
-            // Trigger a change so collectCurrentForm gets the new value
+            const assetPath = await uploadImage(file);
+            const target = button.parentNode.querySelector("input");
+            target.value = assetPath;
+            target.dispatchEvent(new Event("input", { bubbles: true }));
             target.dispatchEvent(new Event("change", { bubbles: true }));
-          } catch {
-            status.textContent = "Upload failed.";
+            setStatus(`Uploaded to ${assetPath}. Use this section's save button to publish the path.`, "success");
+          } catch (error) {
+            setStatus(error.message || "Upload failed.", "error");
           }
         };
-        input.click();
+        fileInput.click();
+      });
+    });
+
+    adminApp.querySelectorAll("[data-save-submission]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const row = button.closest("[data-submission-row]");
+        const type = button.dataset.saveSubmission;
+        const id = row.dataset.id;
+        const payload = {};
+        row.querySelectorAll("[data-submission-field]").forEach((input) => {
+          payload[input.dataset.submissionField] = input.value;
+        });
+        setStatus("Saving submission...");
+        try {
+          await api(`/api/admin/${type}/${encodeURIComponent(id)}`, {
+            method: "PUT",
+            body: JSON.stringify(payload)
+          });
+          const item = state.data[type][Number(row.dataset.index)];
+          Object.assign(item, payload);
+          setStatus("Submission saved.", "success");
+        } catch (error) {
+          setStatus(error.message || "Submission save failed.", "error");
+        }
+      });
+    });
+
+    adminApp.querySelectorAll("[data-delete-submission]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const row = button.closest("[data-submission-row]");
+        const type = button.dataset.deleteSubmission;
+        const id = row.dataset.id;
+        setStatus("Deleting submission...");
+        try {
+          await api(`/api/admin/${type}/${encodeURIComponent(id)}`, { method: "DELETE" });
+          state.data[type].splice(Number(row.dataset.index), 1);
+          renderAdmin();
+        } catch (error) {
+          setStatus(error.message || "Delete failed.", "error");
+        }
       });
     });
 
     const meForm = adminApp.querySelector("#meForm");
     if (meForm) {
-      meForm.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const data = Object.fromEntries(new FormData(meForm).entries());
-        const status = document.getElementById("adminStatus");
-        status.textContent = "Updating profile...";
+      meForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const payload = Object.fromEntries(new FormData(meForm).entries());
+        setStatus("Updating profile...");
         try {
-          await api("/api/admin/me", { method: "PUT", body: JSON.stringify(data) });
-          status.textContent = "Profile updated successfully.";
-          // Update local data so it stays in sync
-          const m = state.data.members.find(m => m.id === state.user.member_id);
-          if (m) Object.assign(m, data);
-        } catch {
-          status.textContent = "Failed to update profile.";
+          await api("/api/admin/me", { method: "PUT", body: JSON.stringify(payload) });
+          const member = state.data.members.find((item) => String(item.id) === String(state.user.member_id));
+          if (member) Object.assign(member, payload);
+          setStatus("Profile updated.", "success");
+        } catch (error) {
+          setStatus(error.message || "Profile update failed.", "error");
         }
       });
     }
 
-    // Save permissions (checkbox-based)
-    adminApp.querySelectorAll(".save-perms").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const userId = btn.dataset.userId;
-        const memberId = btn.dataset.memberId;
-        const status = document.getElementById("adminStatus");
-        const perms = [...adminApp.querySelectorAll(`.perm-cb[data-user-id="${userId}"]`)]
-          .filter(cb => cb.checked).map(cb => cb.dataset.perm);
-        status.textContent = "Saving permissions...";
+    const newUserForm = adminApp.querySelector("#newUserForm");
+    if (newUserForm) {
+      newUserForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const payload = Object.fromEntries(new FormData(newUserForm).entries());
+        payload.permissions = [...newUserForm.querySelectorAll(".new-perm-cb:checked")].map((input) => input.value);
+        payload.isAdmin = !!newUserForm.querySelector("[name='isAdmin']").checked;
+        setStatus("Creating user...");
+        try {
+          const result = await api("/api/admin/users/create", {
+            method: "POST",
+            body: JSON.stringify(payload)
+          });
+          state.users = await api("/api/admin/users");
+          renderAdmin();
+          setStatus(`User created. Initial password: ${result.initialPassword || payload.password || payload.phone || "12345678"}`, "success");
+        } catch (error) {
+          setStatus(error.message || "User create failed.", "error");
+        }
+      });
+    }
+
+    adminApp.querySelectorAll(".create-user").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const memberId = button.dataset.memberId;
+        const emailInput = adminApp.querySelector(`.email-inp[data-member-id="${CSS.escape(memberId)}"]`);
+        const row = state.users.find((user) => String(user.member_id || "") === String(memberId || ""));
+        const email = emailInput ? emailInput.value.trim() : "";
+        if (!email) {
+          setStatus("Enter an email address before creating the account.", "error");
+          return;
+        }
+        setStatus("Creating account...");
+        try {
+          const result = await api("/api/admin/users/create", {
+            method: "POST",
+            body: JSON.stringify({ memberId, email, phone: row?.phone || "" })
+          });
+          state.users = await api("/api/admin/users");
+          renderAdmin();
+          setStatus(`Account created. Initial password: ${result.initialPassword || row?.phone || "12345678"}`, "success");
+        } catch (error) {
+          setStatus(error.message || "Account create failed.", "error");
+        }
+      });
+    });
+
+    adminApp.querySelectorAll(".save-perms").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const userId = button.dataset.userId;
+        const permissions = [...adminApp.querySelectorAll(`.perm-cb[data-user-id="${CSS.escape(userId)}"]:checked`)].map((input) => input.value);
+        const isAdmin = !!adminApp.querySelector(`.user-admin-cb[data-user-id="${CSS.escape(userId)}"]`)?.checked;
+        setStatus("Saving permissions...");
         try {
           await api("/api/admin/users/permissions", {
             method: "POST",
-            body: JSON.stringify({ userId, permissions: perms })
+            body: JSON.stringify({ userId, permissions, isAdmin })
           });
-          // Update local state
-          const u = state.users.find(u => String(u.member_id) === String(memberId));
-          if (u) u.permissions = perms;
-          status.textContent = "✔ Permissions saved.";
-        } catch {
-          status.textContent = "Failed to save permissions.";
+          const user = state.users.find((item) => String(item.user_id) === String(userId));
+          if (user) {
+            user.permissions = permissions;
+            user.is_admin = isAdmin ? 1 : 0;
+          }
+          setStatus("Permissions saved.", "success");
+        } catch (error) {
+          setStatus(error.message || "Permission save failed.", "error");
         }
       });
     });
 
-    // Create account for member
-    adminApp.querySelectorAll(".create-user").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const memberId = btn.dataset.memberId;
-        const emailInput = adminApp.querySelector(`.email-inp[data-member-id="${memberId}"]`);
-        const email = emailInput ? emailInput.value.trim() : "";
-        const u = state.users.find(u => String(u.member_id) === String(memberId));
-        const status = document.getElementById("adminStatus");
-        if (!email) {
-          status.textContent = "Please enter an email address first.";
-          return;
-        }
-        status.textContent = "Creating account...";
-        try {
-          await api("/api/admin/users/create", {
-            method: "POST",
-            body: JSON.stringify({ memberId: Number(memberId), email, phone: u ? u.phone : null })
-          });
-          status.textContent = `✔ Account created. Initial password = ${u && u.phone ? u.phone : "12345678"}`;
-          // Refresh users list
-          state.users = await api("/api/admin/users");
-          renderAdmin();
-        } catch (e) {
-          status.textContent = "Failed to create account.";
-        }
-      });
-    });
-
-    // Reset password
-    adminApp.querySelectorAll("[data-reset-user]").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const userId = btn.dataset.resetUser;
-        const status = document.getElementById("adminStatus");
-        if (!confirm("Reset password to phone number?")) return;
-        status.textContent = "Resetting...";
+    adminApp.querySelectorAll("[data-reset-user]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        setStatus("Resetting password...");
         try {
           await api("/api/admin/users/reset-password", {
             method: "POST",
-            body: JSON.stringify({ userId })
+            body: JSON.stringify({ userId: button.dataset.resetUser })
           });
-          status.textContent = "✔ Password reset. User must change on next login.";
-        } catch {
-          status.textContent = "Failed to reset password.";
+          setStatus("Password reset. User must change it on next login.", "success");
+        } catch (error) {
+          setStatus(error.message || "Password reset failed.", "error");
         }
       });
+    });
+
+    adminApp.querySelectorAll("[data-save-section]").forEach((button) => {
+      button.addEventListener("click", save);
     });
   }
 
   function renderAdmin() {
     let body = "";
+    if (state.tab === "dashboard") body = renderDashboard();
     if (state.tab === "settings") body = renderSettings();
+    if (state.tab === "menus") body = renderMenus();
+    if (state.tab === "slides") body = renderSlides();
     if (state.tab === "pages") body = renderPages();
     if (state.tab === "posts") body = renderPosts();
     if (state.tab === "committee") body = renderCommittee();
@@ -762,67 +1206,75 @@
     if (state.tab === "gallery") body = renderGallery();
     if (state.tab === "applications") body = renderSubmissions("applications");
     if (state.tab === "messages") body = renderSubmissions("messages");
-    if (state.tab === "me") body = renderMe();
     if (state.tab === "users") body = renderUsers();
+    if (state.tab === "me") body = renderMe();
     adminLayout(body);
     bindAdmin();
   }
 
   async function save() {
-    collectCurrentForm();
-    const status = document.getElementById("adminStatus");
-    status.textContent = "Saving...";
-    try {
-      await api("/api/admin/site", {
-        method: "PUT",
-        body: JSON.stringify(state.data)
-      });
-      status.textContent = "Saved.";
-    } catch {
-      status.textContent = "Save failed.";
+    if (!canSaveCurrentTab()) {
+      setStatus("You do not have permission to save this section.", "error");
+      return;
     }
+    collectCurrentForm();
+    setStatus("Saving changes...");
+    try {
+      const result = await api("/api/admin/site", {
+        method: "PUT",
+        body: JSON.stringify(payloadForCurrentTab())
+      });
+      state.data.updatedAt = result.updatedAt;
+      setStatus("Changes saved.", "success");
+    } catch (error) {
+      setStatus(error.message || "Save failed.", "error");
+    }
+  }
+
+  function payloadForCurrentTab() {
+    if (state.tab === "settings") return { settings: state.data.settings };
+    if (state.tab === "menus") return { navigation: state.data.navigation, topLinks: state.data.topLinks };
+    if (state.tab === "slides") return { heroSlides: state.data.heroSlides };
+    if (["pages", "posts", "committee", "members", "gallery"].includes(state.tab)) {
+      return { [state.tab]: state.data[state.tab] };
+    }
+    return {};
   }
 
   async function loadAdmin() {
     try {
-      // Always refresh user info from server (fixes stale localStorage state)
       const me = await api("/api/admin/whoami");
       state.user = me;
-      localStorage.setItem("alumniUser", JSON.stringify(state.user));
+      storage.setItem(userKey, JSON.stringify(state.user));
 
       if (me.mustChangePassword) {
         renderChangePassword();
         return;
       }
 
-      [state.data] = await Promise.all([api("/api/admin/site")]);
+      state.data = await api("/api/admin/site");
+      if (!state.data.navigation) state.data.navigation = [];
+      if (!state.data.topLinks) state.data.topLinks = [];
+      if (!state.data.heroSlides) state.data.heroSlides = [];
+      if (!state.data.pages) state.data.pages = [];
+      if (!state.data.posts) state.data.posts = [];
+      if (!state.data.committee) state.data.committee = [];
+      if (!state.data.members) state.data.members = [];
+      if (!state.data.gallery) state.data.gallery = [];
+      if (!state.data.applications) state.data.applications = [];
+      if (!state.data.messages) state.data.messages = [];
 
       if (state.user.isAdmin) {
         state.users = await api("/api/admin/users");
       }
 
-      // Set default tab based on user role
-      if (!state.user.isAdmin && !hasPerm("edit_any")) {
-        // Member with limited permissions
-        const tabAllowed = {
-          settings: false,
-          pages: false,
-          posts: hasPerm("add_post"),
-          committee: false,
-          members: hasPerm("add_member"),
-          gallery: false,
-          applications: hasPerm("view_submissions"),
-          messages: hasPerm("view_submissions"),
-          users: false,
-          me: true
-        };
-        if (!tabAllowed[state.tab]) state.tab = "me";
+      if (!canOpenTab(state.tab)) {
+        state.tab = availableTabs()[0]?.[0] || "dashboard";
       }
-
       renderAdmin();
-    } catch (err) {
-      console.error(err);
-      renderLogin("Please login again");
+    } catch (error) {
+      console.error(error);
+      renderLogin(error.message || "Please login again");
     }
   }
 
@@ -831,4 +1283,9 @@
   } else {
     renderLogin();
   }
+
+  setTimeout(() => {
+    const stuck = adminApp.textContent && adminApp.textContent.trim() === "লোড হচ্ছে...";
+    if (stuck) renderLogin("Admin could not finish loading. Please login again.");
+  }, 6000);
 })();

@@ -1,7 +1,26 @@
 (function () {
   const app = document.getElementById("app");
+  const memberTokenKey = "alumniMemberToken";
+  const storage = (() => {
+    try {
+      if (!window.localStorage) throw new Error("Storage unavailable");
+      const testKey = "__member_storage_test__";
+      window.localStorage.setItem(testKey, "1");
+      window.localStorage.removeItem(testKey);
+      return window.localStorage;
+    } catch {
+      return {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {}
+      };
+    }
+  })();
+
   const state = {
     data: null,
+    authToken: storage.getItem(memberTokenKey),
+    authUser: null,
     slide: 0,
     committeeYear: ""
   };
@@ -30,6 +49,19 @@
       .format(new Date(`${date}T00:00:00`));
   };
 
+  const formatDateTime = (date) => {
+    if (!date) return "";
+    const parsed = new Date(date);
+    if (Number.isNaN(parsed.getTime())) return "";
+    return new Intl.DateTimeFormat("bn-BD", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit"
+    }).format(parsed);
+  };
+
   const paragraphs = (items = []) =>
     items.map((item) => `<p>${escapeHtml(item)}</p>`).join("");
 
@@ -56,6 +88,47 @@
   function setTitle(title) {
     const suffix = state.data?.settings?.siteName || "প্রাক্তন শিক্ষার্থী ফোরাম";
     document.title = title ? `${title} | ${suffix}` : suffix;
+  }
+
+  function setAuth(token, user) {
+    state.authToken = token || "";
+    state.authUser = user || null;
+    if (token) storage.setItem(memberTokenKey, token);
+    else storage.removeItem(memberTokenKey);
+  }
+
+  async function api(url, options = {}) {
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(state.authToken ? { Authorization: `Bearer ${state.authToken}` } : {}),
+        ...(options.headers || {})
+      }
+    });
+    const text = await response.text();
+    const payload = text ? JSON.parse(text) : {};
+    if (!response.ok) throw new Error(payload.error || "Request failed");
+    return payload;
+  }
+
+  async function loadAuth() {
+    if (!state.authToken) return;
+    try {
+      const result = await api("/api/auth/me");
+      if (!result.user) {
+        setAuth("", null);
+        return;
+      }
+      state.authUser = result.user;
+    } catch {
+      setAuth("", null);
+    }
+  }
+
+  async function refreshForum() {
+    const result = await api("/api/forum");
+    state.data.forumPosts = result.posts || [];
   }
 
   /* ── Header ─────────────────────────────────────────────── */
@@ -498,6 +571,162 @@
     `;
   }
 
+  function careerPage(page) {
+    const careers = state.data.posts.filter((post) => post.category === "Career");
+    return `
+      ${pageHero(page)}
+      <section class="content-section">
+        <div class="container career-layout">
+          <div class="career-intro">
+            <span class="eyebrow">Career</span>
+            <h2>${escapeHtml(page.subtitle || "চাকরি ও ক্যারিয়ার বিজ্ঞপ্তি")}</h2>
+            ${paragraphs(page.body || [])}
+          </div>
+          <div class="career-list">
+            ${careers.length ? careers.map((post) => `
+              <article class="career-card">
+                <div>
+                  <span>${formatDate(post.date)}</span>
+                  <h3><a href="${escapeHtml(post.path)}">${escapeHtml(post.title)}</a></h3>
+                  <p>${escapeHtml(post.excerpt)}</p>
+                </div>
+                <a class="plain-link" href="${escapeHtml(post.path)}">বিস্তারিত দেখুন</a>
+              </article>
+            `).join("") : `<div class="empty-state">এখনো কোনো চাকরির বিজ্ঞপ্তি নেই।</div>`}
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function authForms() {
+    return `
+      <div class="auth-grid">
+        <form class="site-form auth-panel" data-auth-form="login">
+          <h3>সদস্য লগইন</h3>
+          <label>ই-মেইল<input name="email" type="email" required></label>
+          <label>পাসওয়ার্ড<input name="password" type="password" required></label>
+          <button class="skew-button" type="submit">প্রবেশ করুন</button>
+          <p class="form-status" aria-live="polite"></p>
+        </form>
+        <form class="site-form auth-panel" data-auth-form="register">
+          <h3>নতুন সদস্য নিবন্ধন</h3>
+          <label>নাম<input name="name" type="text" required></label>
+          <label>ই-মেইল<input name="email" type="email" required></label>
+          <label>ফোন<input name="phone" type="text"></label>
+          <label>ব্যাচ<input name="batch" type="text"></label>
+          <label>পাসওয়ার্ড<input name="password" type="password" minlength="6" required></label>
+          <button class="skew-button" type="submit">নিবন্ধন করুন</button>
+          <p class="form-status" aria-live="polite"></p>
+        </form>
+      </div>
+    `;
+  }
+
+  function forumComposer() {
+    if (!state.authUser) {
+      return `
+        <div class="forum-auth">
+          <div>
+            <span class="eyebrow">Member only</span>
+            <h2>ফোরামে লিখতে লগইন করুন</h2>
+            <p>নিবন্ধিত সদস্যরা ধারণা, প্রশ্ন, শিক্ষা বিষয়ক লেখা, স্মৃতি বা ঘোষণা প্রকাশ করতে পারবেন।</p>
+          </div>
+          ${authForms()}
+        </div>
+      `;
+    }
+
+    return `
+      <form class="site-form forum-composer" data-forum-post>
+        <div class="forum-composer-head">
+          <div>
+            <span class="eyebrow">Community post</span>
+            <h2>আপনার লেখা প্রকাশ করুন</h2>
+            <p>${escapeHtml(state.authUser.email)} হিসেবে লগইন করা আছে।</p>
+          </div>
+          <button class="plain-button" data-member-logout type="button">লগআউট</button>
+        </div>
+        <div class="form-grid">
+          <label>শিরোনাম<input name="title" type="text" required></label>
+          <label>ধরণ
+            <select name="category">
+              <option>Idea</option>
+              <option>Education</option>
+              <option>Question</option>
+              <option>Notice</option>
+              <option>Memory</option>
+            </select>
+          </label>
+          <label class="wide-field">লেখা<textarea name="body" required></textarea></label>
+        </div>
+        <button class="skew-button" type="submit">পোস্ট করুন</button>
+        <p class="form-status" aria-live="polite"></p>
+      </form>
+    `;
+  }
+
+  function forumPostCard(post) {
+    const comments = post.comments || [];
+    const postUrl = `${window.location.origin}/forum/#post-${encodeURIComponent(post.id)}`;
+    return `
+      <article class="forum-card" id="post-${escapeHtml(post.id)}">
+        <div class="forum-card-head">
+          <div>
+            <span>${escapeHtml(post.category || "General")}</span>
+            <h3>${escapeHtml(post.title)}</h3>
+          </div>
+          <time>${formatDateTime(post.createdAt)}</time>
+        </div>
+        <p class="forum-author">${escapeHtml(post.authorName || "Member")}</p>
+        <div class="forum-body">${escapeHtml(post.body).replace(/\n/g, "<br>")}</div>
+        <div class="forum-actions">
+          <button class="${post.likedByMe ? "active" : ""}" data-forum-like="${escapeHtml(post.id)}" type="button">
+            ${post.likedByMe ? "লাইক করা" : "লাইক"} <span>${Number(post.likes || 0)}</span>
+          </button>
+          <button data-forum-share="${escapeHtml(postUrl)}" type="button">শেয়ার</button>
+        </div>
+        <div class="comment-list">
+          ${comments.map((comment) => `
+            <div class="comment-item">
+              <strong>${escapeHtml(comment.authorName || "Member")}</strong>
+              <p>${escapeHtml(comment.body)}</p>
+              <time>${formatDateTime(comment.createdAt)}</time>
+            </div>
+          `).join("")}
+        </div>
+        ${state.authUser ? `
+          <form class="comment-form" data-forum-comment="${escapeHtml(post.id)}">
+            <input name="body" type="text" placeholder="মন্তব্য লিখুন" required>
+            <button class="plain-button" type="submit">মন্তব্য</button>
+          </form>
+        ` : `<p class="forum-login-note">মন্তব্য বা লাইক করতে সদস্য লগইন করুন।</p>`}
+      </article>
+    `;
+  }
+
+  function forumPage(page) {
+    const posts = state.data.forumPosts || [];
+    return `
+      ${pageHero(page)}
+      <section class="content-section forum-section">
+        <div class="container forum-layout">
+          ${forumComposer()}
+          <div class="forum-feed">
+            <div class="forum-feed-head">
+              <div>
+                <span class="eyebrow">Forum feed</span>
+                <h2>সদস্যদের আলোচনা</h2>
+              </div>
+              <button class="plain-button" data-refresh-forum type="button">রিফ্রেশ</button>
+            </div>
+            ${posts.length ? posts.map(forumPostCard).join("") : `<div class="empty-state">এখনো কোনো ফোরাম পোস্ট নেই। প্রথম পোস্টটি লিখুন।</div>`}
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
   /* ── Post Detail Page ────────────────────────────────────── */
   function postPage(post) {
     return `
@@ -647,15 +876,22 @@
 
   /* ── Account / Login Page ────────────────────────────────── */
   function accountPage(page) {
+    const user = state.authUser;
     return `
       ${pageHero(page)}
       <section class="content-section">
-        <div class="container compact-form">
-          <form class="site-form">
-            <label>ব্যবহারকারীর নাম বা ই-মেইল<input type="text"></label>
-            <label>পাসওয়ার্ড<input type="password"></label>
-            <button class="skew-button" type="button">প্রবেশ করুন</button>
-          </form>
+        <div class="container account-layout">
+          ${user ? `
+            <div class="site-form account-card">
+              <span class="eyebrow">Logged in</span>
+              <h2>আপনি লগইন করেছেন</h2>
+              <p>${escapeHtml(user.email)}</p>
+              <div class="account-actions">
+                <a class="skew-button" href="/forum/">ফোরামে যান</a>
+                <button class="plain-button" data-member-logout type="button">লগআউট</button>
+              </div>
+            </div>
+          ` : authForms()}
         </div>
       </section>
     `;
@@ -703,6 +939,8 @@
       if (page.render === "committee") content = committeePage(page);
       if (page.render === "members") content = membersPage(page);
       if (page.render === "posts") content = postsPage(page);
+      if (page.render === "career") content = careerPage(page);
+      if (page.render === "forum") content = forumPage(page);
       if (page.render === "download") content = downloadPage(page);
       if (page.render === "gallery") content = galleryPage(page);
       if (page.render === "memberForm") content = memberFormPage(page);
@@ -731,6 +969,25 @@
     if (!response.ok) throw new Error("Submit failed");
     form.reset();
     status.textContent = "সফলভাবে জমা হয়েছে।";
+  }
+
+  async function handleAuthForm(form) {
+    const status = form.querySelector(".form-status");
+    const payload = Object.fromEntries(new FormData(form).entries());
+    const isRegister = form.dataset.authForm === "register";
+    status.textContent = isRegister ? "নিবন্ধন হচ্ছে..." : "লগইন হচ্ছে...";
+    const result = await api(isRegister ? "/api/auth/register" : "/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+    setAuth(result.token, result.user);
+    await refreshForum().catch(() => {});
+    renderPage({ preserveScroll: true });
+  }
+
+  async function refreshForumAndRender() {
+    await refreshForum();
+    renderPage({ preserveScroll: true });
   }
 
   /* ── Event Binding ───────────────────────────────────────── */
@@ -800,12 +1057,108 @@
         catch { form.querySelector(".form-status").textContent = "বার্তা পাঠানো যায়নি।"; }
       });
     });
+
+    app.querySelectorAll("[data-member-logout]").forEach((button) => {
+      button.addEventListener("click", () => {
+        setAuth("", null);
+        renderPage({ preserveScroll: true });
+      });
+    });
+
+    app.querySelectorAll("form[data-auth-form]").forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        try {
+          await handleAuthForm(form);
+        } catch (error) {
+          form.querySelector(".form-status").textContent = error.message || "অনুরোধ সম্পন্ন হয়নি।";
+        }
+      });
+    });
+
+    app.querySelectorAll("form[data-forum-post]").forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const status = form.querySelector(".form-status");
+        status.textContent = "পোস্ট প্রকাশ হচ্ছে...";
+        try {
+          const payload = Object.fromEntries(new FormData(form).entries());
+          await api("/api/forum/posts", { method: "POST", body: JSON.stringify(payload) });
+          form.reset();
+          await refreshForumAndRender();
+        } catch (error) {
+          status.textContent = error.message || "পোস্ট করা যায়নি।";
+        }
+      });
+    });
+
+    app.querySelectorAll("form[data-forum-comment]").forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        try {
+          const payload = Object.fromEntries(new FormData(form).entries());
+          await api(`/api/forum/posts/${encodeURIComponent(form.dataset.forumComment)}/comments`, {
+            method: "POST",
+            body: JSON.stringify(payload)
+          });
+          await refreshForumAndRender();
+        } catch {
+          const input = form.querySelector("input");
+          if (input) input.placeholder = "মন্তব্য করা যায়নি";
+        }
+      });
+    });
+
+    app.querySelectorAll("[data-forum-like]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        if (!state.authUser) {
+          history.pushState({}, "", "/login/");
+          renderPage();
+          return;
+        }
+        try {
+          await api(`/api/forum/posts/${encodeURIComponent(button.dataset.forumLike)}/like`, { method: "POST" });
+          await refreshForumAndRender();
+        } catch {
+          button.disabled = true;
+        }
+      });
+    });
+
+    app.querySelectorAll("[data-forum-share]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const url = button.dataset.forumShare;
+        try {
+          if (navigator.share) {
+            await navigator.share({ title: document.title, url });
+          } else if (navigator.clipboard) {
+            await navigator.clipboard.writeText(url);
+            button.textContent = "লিংক কপি হয়েছে";
+          }
+        } catch {
+          button.textContent = "শেয়ার করা যায়নি";
+        }
+      });
+    });
+
+    app.querySelectorAll("[data-refresh-forum]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        button.textContent = "রিফ্রেশ হচ্ছে...";
+        try { await refreshForumAndRender(); }
+        catch { button.textContent = "রিফ্রেশ করা যায়নি"; }
+      });
+    });
   }
 
   /* ── Init ────────────────────────────────────────────────── */
   async function init() {
     const response = await fetch("/api/site");
     state.data = await response.json();
+    state.data.forumPosts = state.data.forumPosts || [];
+    await loadAuth();
+    if (normalizePath(window.location.pathname) === "/forum/" || state.authUser) {
+      await refreshForum().catch(() => {});
+    }
     renderPage();
     // Auto-advance hero slider on home page
     setInterval(() => {

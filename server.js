@@ -15,8 +15,14 @@ const {
   updateMemberProfile,
   getAllMembersWithUsers,
   createUserForMember,
+  registerMemberUser,
   resetUserPassword,
-  getUsers,
+  updateSubmission,
+  deleteSubmission,
+  getForumPosts,
+  createForumPost,
+  addForumComment,
+  toggleForumLike,
   hashPassword,
   fromJson,
   init
@@ -28,6 +34,24 @@ const port = Number(process.env.PORT || 3000);
 const adminUser = process.env.ADMIN_USER || "admin";
 const adminPassword = process.env.ADMIN_PASSWORD || "admin123";
 const sessions = new Map();
+const assetUploadExts = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"]);
+
+const permissionAliases = {
+  manage_posts: ["add_post"],
+  manage_members: ["add_member"],
+  manage_submissions: ["view_submissions"]
+};
+
+const siteSectionPermissions = [
+  { keys: ["settings"], permission: "manage_settings" },
+  { keys: ["navigation", "topLinks"], permission: "manage_menus" },
+  { keys: ["heroSlides"], permission: "manage_slides" },
+  { keys: ["pages"], permission: "manage_pages" },
+  { keys: ["posts"], permission: "manage_posts" },
+  { keys: ["committee"], permission: "manage_committee" },
+  { keys: ["members"], permission: "manage_members" },
+  { keys: ["gallery"], permission: "manage_gallery" }
+];
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -88,21 +112,80 @@ function isAuthed(req) {
   return true;
 }
 
-function requireAuth(req, res) {
+function getSession(req) {
   const token = getToken(req);
   const session = sessions.get(token);
-  if (session && Date.now() < session.expiresAt) {
-    session.expiresAt = Date.now() + 8 * 60 * 60 * 1000;
+  if (!session) return null;
+  if (Date.now() > session.expiresAt) {
+    sessions.delete(token);
+    return null;
+  }
+  session.expiresAt = Date.now() + 8 * 60 * 60 * 1000;
+  return session;
+}
+
+function requireAuth(req, res) {
+  const session = getSession(req);
+  if (session) {
     return session;
   }
   sendJson(res, 401, { error: "Unauthorized" });
   return false;
 }
 
+function createSession(user) {
+  const token = crypto.randomBytes(32).toString("hex");
+  sessions.set(token, {
+    user,
+    expiresAt: Date.now() + 8 * 60 * 60 * 1000
+  });
+  return token;
+}
+
 function hasPermission(session, permission) {
   if (session.user.is_admin) return true;
   const perms = JSON.parse(session.user.permissions_json || "[]");
-  return perms.includes(permission);
+  const aliases = permissionAliases[permission] || [];
+  return perms.includes(permission) || aliases.some((alias) => perms.includes(alias));
+}
+
+function canSaveSite(session) {
+  if (session.user.is_admin || hasPermission(session, "edit_any")) return true;
+  return siteSectionPermissions.some((section) => hasPermission(session, section.permission));
+}
+
+async function buildAllowedSitePayload(session, body) {
+  const current = await getAdminSite();
+  const canEditAll = session.user.is_admin || hasPermission(session, "edit_any");
+  let changed = false;
+  for (const section of siteSectionPermissions) {
+    if (!canEditAll && !hasPermission(session, section.permission)) continue;
+    for (const key of section.keys) {
+      if (Object.prototype.hasOwnProperty.call(body, key)) {
+        current[key] = body[key];
+        changed = true;
+      }
+    }
+  }
+  return changed ? current : null;
+}
+
+async function getAvailableAssetName(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  const rawBase = path.basename(filename, ext) || "image";
+  const base = rawBase.replace(/[^a-z0-9_-]/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "image";
+  let cleanName = `${base}${ext}`;
+  let filePath = path.join(publicDir, "assets", cleanName);
+
+  try {
+    await fs.access(filePath);
+    cleanName = `${base}-${Date.now()}${ext}`;
+    filePath = path.join(publicDir, "assets", cleanName);
+  } catch {
+    // Name is available.
+  }
+
+  return { cleanName, filePath };
 }
 
 function normalizeStaticPath(urlPath) {
@@ -139,16 +222,12 @@ async function handleApi(req, res, url) {
 
     // Check env-var super admin first
     if (username === adminUser && password === adminPassword) {
-      const token = crypto.randomBytes(32).toString("hex");
-      sessions.set(token, {
-        user: {
-          id: "admin",
-          email: adminUser,
-          is_admin: 1,
-          must_change_password: 0,
-          permissions_json: "[]"
-        },
-        expiresAt: Date.now() + 8 * 60 * 60 * 1000
+      const token = createSession({
+        id: "admin",
+        email: adminUser,
+        is_admin: 1,
+        must_change_password: 0,
+        permissions_json: "[]"
       });
       sendJson(res, 200, { token, mustChangePassword: false, isAdmin: true, permissions: [] });
       return;
@@ -157,11 +236,7 @@ async function handleApi(req, res, url) {
     // Fall back to database users
     const user = await getUserByEmail(username);
     if (user && user.password_hash === hashPassword(password)) {
-      const token = crypto.randomBytes(32).toString("hex");
-      sessions.set(token, {
-        user,
-        expiresAt: Date.now() + 8 * 60 * 60 * 1000
-      });
+      const token = createSession(user);
       sendJson(res, 200, {
         token,
         mustChangePassword: !!user.must_change_password,
@@ -174,7 +249,107 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // Auth required for all endpoints below
+  if (req.method === "POST" && url.pathname === "/api/auth/register") {
+    const body = await readBody(req);
+    const result = await registerMemberUser(body);
+    if (result.error) {
+      sendJson(res, 400, result);
+      return;
+    }
+    const user = await getUserByEmail(String(body.email || "").trim().toLowerCase());
+    const token = createSession(user);
+    sendJson(res, 201, {
+      ok: true,
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        memberId: user.member_id || null
+      }
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    const body = await readBody(req);
+    const user = await getUserByEmail(String(body.email || body.username || "").trim().toLowerCase());
+    if (!user || user.password_hash !== hashPassword(body.password || "")) {
+      sendJson(res, 401, { error: "Invalid credentials" });
+      return;
+    }
+    const token = createSession(user);
+    sendJson(res, 200, {
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        memberId: user.member_id || null,
+        isAdmin: !!user.is_admin
+      }
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/auth/me") {
+    const session = getSession(req);
+    sendJson(res, 200, {
+      user: session ? {
+        id: session.user.id,
+        email: session.user.email,
+        memberId: session.user.member_id || null,
+        isAdmin: !!session.user.is_admin
+      } : null
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/applications") {
+    const body = await readBody(req);
+    const result = await addApplication(body);
+    sendJson(res, 201, { ok: true, id: result.id });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/messages") {
+    const body = await readBody(req);
+    const result = await addMessage(body);
+    sendJson(res, 201, { ok: true, id: result.id });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/forum") {
+    const session = getSession(req);
+    sendJson(res, 200, { posts: await getForumPosts(session?.user?.id || "") });
+    return;
+  }
+
+  const forumCommentMatch = url.pathname.match(/^\/api\/forum\/posts\/([^/]+)\/comments$/);
+  if (req.method === "POST" && forumCommentMatch) {
+    const session = requireAuth(req, res);
+    if (!session) return;
+    const result = await addForumComment(session.user, forumCommentMatch[1], await readBody(req));
+    sendJson(res, result.error ? 400 : 201, result);
+    return;
+  }
+
+  const forumLikeMatch = url.pathname.match(/^\/api\/forum\/posts\/([^/]+)\/like$/);
+  if (req.method === "POST" && forumLikeMatch) {
+    const session = requireAuth(req, res);
+    if (!session) return;
+    const result = await toggleForumLike(session.user, forumLikeMatch[1]);
+    sendJson(res, result.error ? 400 : 200, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/posts") {
+    const session = requireAuth(req, res);
+    if (!session) return;
+    const result = await createForumPost(session.user, await readBody(req));
+    sendJson(res, result.error ? 400 : 201, result);
+    return;
+  }
+
+  // Auth required for admin endpoints below
   const session = requireAuth(req, res);
   if (!session) return;
 
@@ -217,7 +392,12 @@ async function handleApi(req, res, url) {
       return;
     }
     const body = await readBody(req);
-    const result = await createUserForMember(body.memberId, body.email, body.phone);
+    const memberId = body.memberId ? Number(body.memberId) : null;
+    const result = await createUserForMember(memberId, body.email, body.phone, {
+      password: body.password,
+      permissions: body.permissions || [],
+      isAdmin: !!body.isAdmin
+    });
     sendJson(res, result.error ? 400 : 200, result);
     return;
   }
@@ -239,7 +419,7 @@ async function handleApi(req, res, url) {
       return;
     }
     const body = await readBody(req);
-    await updateUserPermissions(body.userId, body.permissions);
+    await updateUserPermissions(body.userId, body.permissions, body.isAdmin);
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -262,12 +442,32 @@ async function handleApi(req, res, url) {
 
   if (req.method === "PUT" && url.pathname === "/api/admin/site") {
     const body = await readBody(req);
-    if (!session.user.is_admin && !hasPermission(session, "edit_any")) {
+    if (!canSaveSite(session)) {
       sendJson(res, 403, { error: "Permission denied" });
       return;
     }
-    const result = await replaceSite(body);
+    const allowedPayload = await buildAllowedSitePayload(session, body);
+    if (!allowedPayload) {
+      sendJson(res, 403, { error: "Permission denied" });
+      return;
+    }
+    const result = await replaceSite(allowedPayload);
     sendJson(res, 200, { ok: true, updatedAt: result.updatedAt });
+    return;
+  }
+
+  const submissionMatch = url.pathname.match(/^\/api\/admin\/(applications|messages)\/([^/]+)$/);
+  if (submissionMatch && (req.method === "PUT" || req.method === "PATCH" || req.method === "DELETE")) {
+    if (!session.user.is_admin && !hasPermission(session, "manage_submissions")) {
+      sendJson(res, 403, { error: "Permission denied" });
+      return;
+    }
+
+    const [, table, id] = submissionMatch;
+    const result = req.method === "DELETE"
+      ? await deleteSubmission(table, id)
+      : await updateSubmission(table, id, await readBody(req));
+    sendJson(res, result.error ? 400 : 200, result);
     return;
   }
 
@@ -277,48 +477,27 @@ async function handleApi(req, res, url) {
       return;
     }
     const body = await readBody(req);
-    const imgbbKey = process.env.IMGBB_API_KEY;
+    const ext = path.extname(String(body.filename || "")).toLowerCase();
 
-    if (imgbbKey) {
-      // Proxy to ImgBB for Cloud
-      try {
-        const formData = new URLSearchParams();
-        formData.append("image", body.base64);
-        const response = await fetch(`https://api.imgbb.com/1/upload?key=${imgbbKey}`, {
-          method: "POST",
-          body: formData
-        });
-        const data = await response.json();
-        if (data.success) {
-          sendJson(res, 200, { ok: true, path: data.data.url });
-        } else {
-          sendJson(res, 500, { error: "ImgBB upload failed" });
-        }
-      } catch (e) {
-        sendJson(res, 500, { error: "Cloud upload error" });
-      }
-    } else {
-      // Local fallback
-      const cleanName = path.basename(body.filename).replace(/[^a-z0-9.-]/gi, "_");
-      const filePath = path.join(publicDir, "assets", cleanName);
-      await fs.mkdir(path.join(publicDir, "assets"), { recursive: true });
-      await fs.writeFile(filePath, Buffer.from(body.base64, "base64"));
-      sendJson(res, 200, { ok: true, path: `/assets/${cleanName}` });
+    if (!assetUploadExts.has(ext)) {
+      sendJson(res, 400, { error: "Only image files are allowed" });
+      return;
     }
-    return;
-  }
 
-  if (req.method === "POST" && url.pathname === "/api/applications") {
-    const body = await readBody(req);
-    const result = await addApplication(body);
-    sendJson(res, 201, { ok: true, id: result.id });
-    return;
-  }
+    const buffer = Buffer.from(String(body.base64 || ""), "base64");
+    if (!buffer.length) {
+      sendJson(res, 400, { error: "Missing image data" });
+      return;
+    }
+    if (buffer.length > 6 * 1024 * 1024) {
+      sendJson(res, 400, { error: "Image must be 6MB or smaller" });
+      return;
+    }
 
-  if (req.method === "POST" && url.pathname === "/api/messages") {
-    const body = await readBody(req);
-    const result = await addMessage(body);
-    sendJson(res, 201, { ok: true, id: result.id });
+    await fs.mkdir(path.join(publicDir, "assets"), { recursive: true });
+    const { cleanName, filePath } = await getAvailableAssetName(body.filename);
+    await fs.writeFile(filePath, buffer);
+    sendJson(res, 200, { ok: true, path: `/assets/${cleanName}` });
     return;
   }
 

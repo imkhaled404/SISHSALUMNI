@@ -44,6 +44,14 @@
       "path": "/constitutions/"
     },
     {
+      "label": "ক্যারিয়ার",
+      "path": "/career/"
+    },
+    {
+      "label": "ফোরাম",
+      "path": "/forum/"
+    },
+    {
       "label": "যোগাযোগ",
       "path": "/contacts/"
     }
@@ -68,6 +76,10 @@
     {
       "label": "গ্যালারি",
       "path": "/gallery/"
+    },
+    {
+      "label": "ফোরাম",
+      "path": "/forum/"
     }
   ],
   "heroSlides": [
@@ -163,6 +175,27 @@
       "body": []
     },
     {
+      "key": "career",
+      "path": "/career/",
+      "title": "ক্যারিয়ার",
+      "subtitle": "প্রাক্তন শিক্ষার্থী ও সদস্যদের জন্য চাকরির বিজ্ঞপ্তি এবং ক্যারিয়ার সুযোগ",
+      "render": "career",
+      "filter": "Career",
+      "body": [
+        "অ্যাডমিন প্যানেলের News/Career পোস্ট থেকে এখানে চাকরির বিজ্ঞপ্তি প্রকাশ করুন।"
+      ]
+    },
+    {
+      "key": "forum",
+      "path": "/forum/",
+      "title": "ফোরাম",
+      "subtitle": "নিবন্ধিত সদস্যদের ধারণা, প্রশ্ন, শিক্ষা বিষয়ক লেখা এবং আলোচনার স্থান",
+      "render": "forum",
+      "body": [
+        "নিবন্ধিত সদস্যরা পোস্ট লিখতে, মন্তব্য করতে, লাইক দিতে এবং আলোচনা শেয়ার করতে পারবেন।"
+      ]
+    },
+    {
       "key": "download",
       "path": "/download/",
       "title": "ডাউনলোড",
@@ -202,28 +235,28 @@
     {
       "key": "login",
       "path": "/login/",
-      "title": "Login",
+      "title": "লগইন",
       "render": "account",
       "body": []
     },
     {
       "key": "register",
       "path": "/register/",
-      "title": "Register",
+      "title": "নিবন্ধন",
       "render": "account",
       "body": []
     },
     {
       "key": "account",
       "path": "/account/",
-      "title": "Account",
+      "title": "অ্যাকাউন্ট",
       "render": "account",
       "body": []
     },
     {
       "key": "password-reset",
       "path": "/password-reset/",
-      "title": "Password Reset",
+      "title": "পাসওয়ার্ড রিসেট",
       "render": "account",
       "body": []
     }
