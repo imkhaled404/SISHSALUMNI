@@ -443,7 +443,7 @@
       <section class="quote-band alumni-quote-band">
         <div class="container quote-grid">
           ${quotes.map((item) =>
-      `<blockquote><p>${escapeHtml(item.quote)}</p><p>${escapeHtml(item.quote)}</p><cite>${escapeHtml(item.name)}</cite></blockquote>`
+      `<blockquote><p>${escapeHtml(item.quote)}</p><cite>${escapeHtml(item.name)}</cite></blockquote>`
     ).join("")}
         </div>
       </section>
