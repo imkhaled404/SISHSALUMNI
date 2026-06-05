@@ -26,15 +26,20 @@ if (isPostgres) {
 // Uniform Query Helper
 async function query(sql, params = []) {
   if (isPostgres) {
-    // Convert ? to $1, $2 for Postgres
-    let count = 0;
-    const pgSql = sql.replace(/\?/g, () => `$${++count}`);
-    const res = await pool.query(pgSql, params);
-    return {
-      rows: res.rows,
-      changes: res.rowCount,
-      lastInsertRowid: res.rows.length > 0 ? res.rows[0].id : null
-    };
+    try {
+      // Convert ? to $1, $2 for Postgres
+      let count = 0;
+      const pgSql = sql.replace(/\?/g, () => `$${++count}`);
+      const res = await pool.query(pgSql, params);
+      return {
+        rows: res.rows,
+        changes: res.rowCount,
+        lastInsertRowid: res.rows.length > 0 ? res.rows[0].id : null
+      };
+    } catch (err) {
+      console.error("Database query failed:", err.message);
+      throw err;
+    }
   } else {
     const stmt = db.prepare(sql);
     let rows = [];
@@ -487,8 +492,11 @@ async function seedIfNeeded() {
 }
 
 async function init() {
+  console.log("Database: Starting initialization...");
   await ensureSchema();
+  console.log("Database: Schema checked.");
   await seedIfNeeded();
+  console.log("Database: Seeding completed (if needed).");
 }
 // Export init to be called by server.js
 module.exports = {
