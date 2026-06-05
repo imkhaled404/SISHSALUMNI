@@ -752,6 +752,10 @@ async function handleApi(req, res, url) {
       return;
     }
     const body = await readBody(req);
+    if (!body.userId) {
+      sendJson(res, 400, { error: "User is required" });
+      return;
+    }
     await updateUserPermissions(body.userId, body.permissions, body.isAdmin);
     sendJson(res, 200, { ok: true });
     return;
@@ -835,7 +839,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/admin/upload") {
-    if (!session.user.is_admin && !hasPermission(session, "upload_image")) {
+    if (!session.user.is_admin && !hasPermission(session, "upload_image") && !canSaveSite(session)) {
       sendJson(res, 403, { error: "Permission denied" });
       return;
     }

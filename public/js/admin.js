@@ -887,6 +887,7 @@
   }
 
   function userRole(user = {}) {
+    if (user._role) return user._role;
     if (user.is_admin) return "admin";
     return normalizePermissions(user.permissions || []).size ? "custom" : "member";
   }
@@ -923,7 +924,13 @@
       `;
     }
 
+    const usedMemberIds = new Set(
+      (state.users || [])
+        .filter((user) => user.user_id && user.member_id)
+        .map((user) => String(user.member_id))
+    );
     const memberOptions = (state.data.members || [])
+      .filter((member) => !usedMemberIds.has(String(member.id || "")))
       .map((member) => `<option value="${escapeHtml(member.id || "")}">${escapeHtml(member.name || "Member")} ${member.email ? `(${escapeHtml(member.email)})` : ""}</option>`)
       .join("");
 
@@ -1403,6 +1410,7 @@
         const userKey = select.dataset.userKey;
         const user = state.users.find((item) => String(item.user_id || `member-${item.member_id || ""}`) === String(userKey));
         if (user) {
+          user._role = select.value;
           user.is_admin = select.value === "admin" ? 1 : 0;
           if (select.value !== "custom") user.permissions = [];
         }
@@ -1428,6 +1436,10 @@
           ? [...newUserForm.querySelectorAll(".new-perm-cb:checked")].map((input) => input.value)
           : [];
         payload.isAdmin = role === "admin";
+        if (role === "custom" && !payload.permissions.length) {
+          setStatus("Select at least one admin menu for a custom admin user.", "error");
+          return;
+        }
         setStatus("Creating user...");
         try {
           const result = await api("/api/admin/users/create", {
@@ -1453,6 +1465,10 @@
         const permissions = role === "custom"
           ? [...adminApp.querySelectorAll(`.perm-cb[data-user-key="${CSS.escape(userKey)}"]:checked`)].map((input) => input.value)
           : [];
+        if (role === "custom" && !permissions.length) {
+          setStatus("Select at least one admin menu before creating a custom admin account.", "error");
+          return;
+        }
         const row = state.users.find((user) => String(user.member_id || "") === String(memberId || ""));
         const email = emailInput ? emailInput.value.trim() : "";
         if (!email) {
@@ -1493,6 +1509,10 @@
           ? [...adminApp.querySelectorAll(`.perm-cb[data-user-key="${CSS.escape(userKey)}"]:checked`)].map((input) => input.value)
           : [];
         const isAdmin = role === "admin";
+        if (role === "custom" && !permissions.length) {
+          setStatus("Select at least one admin menu before saving a custom admin user.", "error");
+          return;
+        }
         setStatus("Saving user...");
         try {
           await api("/api/admin/users/account", {
@@ -1508,9 +1528,11 @@
             user.email = email;
             user.permissions = permissions;
             user.is_admin = isAdmin ? 1 : 0;
+            user._role = role;
           }
           const member = (state.data.members || []).find((item) => String(item.id || "") === String(memberId || ""));
           if (member && email) member.email = email;
+          await loadUsers(true);
           renderAdmin();
           setStatus("User saved.", "success");
         } catch (error) {
