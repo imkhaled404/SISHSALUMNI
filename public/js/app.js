@@ -951,6 +951,11 @@
               <label>যে নম্বর থেকে পেমেন্ট করা হয়েছে<input name="paymentMobile" type="text" placeholder="01XXXXXXXXX"></label>
               <label>Transaction ID<input name="transactionId" type="text"></label>
               <label>পেমেন্টের তারিখ<input name="paymentDate" type="date"></label>
+              <label class="wide-field member-photo-field">সদস্যের ছবি
+                <input name="memberImage" type="file" accept="image/jpeg,image/png,image/webp,image/gif" data-member-image-input>
+                <small>JPG, PNG, WebP বা GIF ছবি দিন। সর্বোচ্চ 2MB।</small>
+                <img class="member-photo-preview" data-member-image-preview alt="" hidden>
+              </label>
               <label class="wide-field">অঙ্গীকার
                 <textarea name="promise">আমি অঙ্গিকার করছি যে সংগঠনের সদস্য হিসাবে অন্তর্ভুক্ত হলে আমি সংগঠনের সকল আদর্শ, উদ্দেশ্য, নীতিমালা মেনে চলতে বাধ্য থাকব।</textarea>
               </label>
@@ -1097,9 +1102,36 @@
   }
 
   /* ── Form Submission ─────────────────────────────────────── */
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || "").split(",")[1] || "");
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function formPayload(form) {
+    const payload = {};
+    const formData = new FormData(form);
+    for (const [key, value] of formData.entries()) {
+      if (typeof File !== "undefined" && value instanceof File) {
+        if (!value.name || !value.size) continue;
+        if (!value.type.startsWith("image/")) throw new Error("শুধু ছবি ফাইল আপলোড করা যাবে।");
+        if (value.size > 2 * 1024 * 1024) throw new Error("ছবির সাইজ 2MB বা কম হতে হবে।");
+        const field = key.replace(/File$/, "");
+        payload[`${field}Name`] = value.name;
+        payload[`${field}Base64`] = await fileToBase64(value);
+        continue;
+      }
+      payload[key] = value;
+    }
+    return payload;
+  }
+
   async function submitJson(url, form) {
     const status = form.querySelector(".form-status");
-    const payload = Object.fromEntries(new FormData(form).entries());
+    const payload = await formPayload(form);
     status.textContent = "পাঠানো হচ্ছে...";
     const response = await fetch(url, {
       method: "POST",
@@ -1110,6 +1142,10 @@
     const result = text ? JSON.parse(text) : {};
     if (!response.ok) throw new Error(result.error || "Submit failed");
     form.reset();
+    form.querySelectorAll("[data-member-image-preview]").forEach((preview) => {
+      preview.hidden = true;
+      preview.removeAttribute("src");
+    });
     status.textContent = "সফলভাবে জমা হয়েছে।";
   }
 
@@ -1247,12 +1283,27 @@
       });
     }
 
+    app.querySelectorAll("[data-member-image-input]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const preview = input.closest(".member-photo-field")?.querySelector("[data-member-image-preview]");
+        const file = input.files?.[0];
+        if (!preview) return;
+        if (!file) {
+          preview.hidden = true;
+          preview.removeAttribute("src");
+          return;
+        }
+        preview.src = URL.createObjectURL(file);
+        preview.hidden = false;
+      });
+    });
+
     // Forms
     app.querySelectorAll("form[data-form='application']").forEach((form) => {
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         try { await submitJson("/api/applications", form); }
-        catch { form.querySelector(".form-status").textContent = "জমা দেওয়া যায়নি।"; }
+        catch (error) { form.querySelector(".form-status").textContent = error.message || "জমা দেওয়া যায়নি।"; }
       });
     });
 

@@ -1180,7 +1180,7 @@ function applicationToMember(application) {
     address: application.currentAddress || application.permanentAddress || application.address || "",
     batch: application.passingYear || application.batch || application.admissionYear || "",
     type: application.memberType || application.type || "General",
-    image: ""
+    image: application.image || application.memberImage || application.photo || ""
   };
 }
 

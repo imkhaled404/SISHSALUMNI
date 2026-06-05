@@ -1434,6 +1434,29 @@ select:focus {
   grid-column: 1 / -1;
 }
 
+.member-photo-field {
+  align-content: start;
+}
+
+.member-photo-field small {
+  color: var(--muted);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.member-photo-field input[type="file"] {
+  padding: 10px;
+}
+
+.member-photo-preview {
+  width: 120px;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
 .form-intro,
 .form-status,
 .admin-status {

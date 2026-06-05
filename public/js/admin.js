@@ -775,6 +775,7 @@
         ["mobile", "Mobile"],
         ["batch", "Batch"],
         ["memberType", "Member type"],
+        ["image", "Member image"],
         ["amount", "Amount"],
         ["paymentMethod", "Payment method"],
         ["paymentMobile", "Payment number"],

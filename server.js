@@ -42,6 +42,7 @@ const adminUser = process.env.ADMIN_USER || "admin";
 const adminPassword = process.env.ADMIN_PASSWORD || "admin123";
 const sessions = new Map();
 const assetUploadExts = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"]);
+const memberImageUploadExts = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
 
 const permissionAliases = {
   manage_posts: ["add_post"],
@@ -208,22 +209,62 @@ async function buildAllowedSitePayload(session, body) {
   return changed ? allowed : null;
 }
 
-async function getAvailableAssetName(filename) {
+function cleanAssetSegment(value) {
+  return String(value || "")
+    .replace(/[^a-z0-9_-]/gi, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function cleanAssetSubdir(subdir = "") {
+  return String(subdir || "")
+    .split(/[\\/]+/)
+    .map(cleanAssetSegment)
+    .filter(Boolean);
+}
+
+async function getAvailableAssetName(filename, subdir = "") {
   const ext = path.extname(filename).toLowerCase();
   const rawBase = path.basename(filename, ext) || "image";
-  const base = rawBase.replace(/[^a-z0-9_-]/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "image";
+  const base = cleanAssetSegment(rawBase) || "image";
+  const segments = cleanAssetSubdir(subdir);
+  const assetDir = path.join(publicDir, "assets", ...segments);
   let cleanName = `${base}${ext}`;
-  let filePath = path.join(publicDir, "assets", cleanName);
+  let filePath = path.join(assetDir, cleanName);
+  let publicPath = `/${["assets", ...segments, cleanName].join("/")}`;
 
   try {
     await fs.access(filePath);
     cleanName = `${base}-${Date.now()}${ext}`;
-    filePath = path.join(publicDir, "assets", cleanName);
+    filePath = path.join(assetDir, cleanName);
+    publicPath = `/${["assets", ...segments, cleanName].join("/")}`;
   } catch {
     // Name is available.
   }
 
-  return { cleanName, filePath };
+  return { cleanName, filePath, publicPath };
+}
+
+async function saveAssetImage({ filename, base64, subdir = "", maxBytes = 6 * 1024 * 1024, allowedExts = assetUploadExts }) {
+  const ext = path.extname(String(filename || "")).toLowerCase();
+  if (!allowedExts.has(ext)) {
+    return { error: "Only image files are allowed" };
+  }
+
+  const rawBase64 = String(base64 || "");
+  const encoded = rawBase64.includes(",") ? rawBase64.split(",").pop() : rawBase64;
+  const buffer = Buffer.from(encoded || "", "base64");
+  if (!buffer.length) {
+    return { error: "Missing image data" };
+  }
+  if (buffer.length > maxBytes) {
+    return { error: `Image must be ${Math.round(maxBytes / 1024 / 1024)}MB or smaller` };
+  }
+
+  const { filePath, publicPath } = await getAvailableAssetName(String(filename || "image.png"), subdir);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, buffer);
+  return { ok: true, path: publicPath };
 }
 
 function normalizeStaticPath(urlPath) {
@@ -482,6 +523,27 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/applications") {
     const body = await readBody(req);
+    const memberImageBase64 = body.memberImageBase64 || body.memberImageFileBase64;
+    const memberImageName = body.memberImageName || body.memberImageFileName || "member-image.png";
+    if (memberImageBase64) {
+      const uploaded = await saveAssetImage({
+        filename: memberImageName,
+        base64: memberImageBase64,
+        subdir: "members",
+        maxBytes: 2 * 1024 * 1024,
+        allowedExts: memberImageUploadExts
+      });
+      if (uploaded.error) {
+        sendJson(res, 400, uploaded);
+        return;
+      }
+      body.image = uploaded.path;
+      body.memberImage = uploaded.path;
+      delete body.memberImageBase64;
+      delete body.memberImageName;
+      delete body.memberImageFileBase64;
+      delete body.memberImageFileName;
+    }
     const result = await addApplication(body);
     sendJson(res, 201, { ok: true, id: result.id });
     return;
@@ -698,27 +760,12 @@ async function handleApi(req, res, url) {
       return;
     }
     const body = await readBody(req);
-    const ext = path.extname(String(body.filename || "")).toLowerCase();
-
-    if (!assetUploadExts.has(ext)) {
-      sendJson(res, 400, { error: "Only image files are allowed" });
-      return;
-    }
-
-    const buffer = Buffer.from(String(body.base64 || ""), "base64");
-    if (!buffer.length) {
-      sendJson(res, 400, { error: "Missing image data" });
-      return;
-    }
-    if (buffer.length > 6 * 1024 * 1024) {
-      sendJson(res, 400, { error: "Image must be 6MB or smaller" });
-      return;
-    }
-
-    await fs.mkdir(path.join(publicDir, "assets"), { recursive: true });
-    const { cleanName, filePath } = await getAvailableAssetName(body.filename);
-    await fs.writeFile(filePath, buffer);
-    sendJson(res, 200, { ok: true, path: `/assets/${cleanName}` });
+    const uploaded = await saveAssetImage({
+      filename: body.filename,
+      base64: body.base64,
+      maxBytes: 6 * 1024 * 1024
+    });
+    sendJson(res, uploaded.error ? 400 : 200, uploaded);
     return;
   }
 
