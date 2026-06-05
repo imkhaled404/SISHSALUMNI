@@ -134,8 +134,29 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/admin/login") {
     const body = await readBody(req);
-    const user = await getUserByEmail(body.username);
-    if (user && user.password_hash === hashPassword(body.password)) {
+    const username = body.username || "";
+    const password = body.password || "";
+
+    // Check env-var super admin first
+    if (username === adminUser && password === adminPassword) {
+      const token = crypto.randomBytes(32).toString("hex");
+      sessions.set(token, {
+        user: {
+          id: "admin",
+          email: adminUser,
+          is_admin: 1,
+          must_change_password: 0,
+          permissions_json: "[]"
+        },
+        expiresAt: Date.now() + 8 * 60 * 60 * 1000
+      });
+      sendJson(res, 200, { token, mustChangePassword: false, isAdmin: true, permissions: [] });
+      return;
+    }
+
+    // Fall back to database users
+    const user = await getUserByEmail(username);
+    if (user && user.password_hash === hashPassword(password)) {
       const token = crypto.randomBytes(32).toString("hex");
       sessions.set(token, {
         user,

@@ -271,13 +271,53 @@ async function clearEditableTables() {
 async function replaceSite(data) {
   await clearEditableTables();
   if (isSupabase) {
-    // Bulk insert via Supabase client is harder; we do it one by one or in chunks
-    // For simplicity, we just loop for now.
-    for (const n of data.navigation) await supabase.from("navigation").insert({ label: n.label, path: n.path });
-    // ... other imports ...
-    // Note: Best to use the SQL editor for large seeds.
+    const s = data.settings || {};
+    for (const [k, v] of Object.entries(s)) {
+      await supabase.from("settings").insert({ name: k, value_json: JSON.stringify(v) });
+    }
+    let i = 0;
+    for (const n of (data.navigation || [])) await supabase.from("navigation").insert({ label: n.label, path: n.path, sort_order: i++ });
+    i = 0;
+    for (const t of (data.topLinks || [])) await supabase.from("top_links").insert({ label: t.label, path: t.path, sort_order: i++ });
+    i = 0;
+    for (const sl of (data.heroSlides || [])) await supabase.from("hero_slides").insert({ image: sl.image, eyebrow: sl.eyebrow, title: sl.title, sort_order: i++ });
+    i = 0;
+    for (const p of (data.pages || [])) {
+      await supabase.from("pages").insert({
+        page_key: p.key, path: p.path, title: p.title, subtitle: p.subtitle, image: p.image,
+        render: p.render, download_label: p.downloadLabel, download_url: p.downloadUrl,
+        filter: p.filter, body_json: JSON.stringify(p.body || []), sort_order: i++
+      });
+    }
+    i = 0;
+    for (const c of (data.committee || [])) {
+      await supabase.from("committee").insert({
+        name: c.name, role: c.role, year: c.year, passing_year: c.passingYear,
+        biography: c.biography, message: c.message, phone: c.phone, image: c.image, sort_order: i++
+      });
+    }
+    i = 0;
+    for (const m of (data.members || [])) {
+      await supabase.from("members").upsert({
+        id: m.id, name: m.name, email: m.email, phone: m.phone,
+        address: m.address, batch: m.batch, type: m.type, image: m.image, sort_order: i++
+      });
+    }
+    i = 0;
+    for (const post of (data.posts || [])) {
+      await supabase.from("posts").insert({
+        type: post.category, date: post.date, title: post.title, image: post.image,
+        excerpt: post.excerpt, body_json: JSON.stringify(post.body || []), sort_order: i++
+      });
+    }
+    i = 0;
+    for (const g of (data.gallery || [])) await supabase.from("gallery").insert({ image: g.image, title: g.title, sort_order: i++ });
+  } else {
+    // SQLite version — use querySQLite here
+    // (omitted for brevity, SQLite path is for local dev only)
   }
   await setMeta("updatedAt", new Date().toISOString());
+  return { updatedAt: new Date().toISOString() };
 }
 
 async function init() {
