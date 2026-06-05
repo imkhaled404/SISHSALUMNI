@@ -1,0 +1,17 @@
+{
+  "name": "prakton-sikkharthi-forum-site",
+  "version": "1.0.0",
+  "description": "Dynamic Prakton Sikkharthi Forum website with admin panel.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "dev": "node --no-warnings server.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "pg": "^8.21.0"
+  }
+}
