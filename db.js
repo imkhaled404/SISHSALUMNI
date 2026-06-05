@@ -1037,7 +1037,14 @@ function normalizeApplication(body) {
   const name = body.name || body.nameBn || body.nameEn || "Unknown applicant";
   const phone = body.phone || body.mobile || "N/A";
   const batch = body.batch || body.passingYear || body.admissionYear || "N/A";
-  const message = body.message || body.payment || body.promise || "";
+  const paymentSummary = [
+    body.paymentMethod ? `Payment method: ${body.paymentMethod}` : "",
+    body.amount ? `Amount: ${body.amount}` : "",
+    body.paymentMobile ? `Payment number: ${body.paymentMobile}` : "",
+    body.transactionId ? `Transaction ID: ${body.transactionId}` : "",
+    body.paymentDate ? `Payment date: ${body.paymentDate}` : ""
+  ].filter(Boolean).join(" | ");
+  const message = body.message || paymentSummary || body.payment || body.promise || "";
   return {
     row: {
       name,

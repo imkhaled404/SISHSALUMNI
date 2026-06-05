@@ -835,8 +835,7 @@
       ["passingYear", "এস.এস.সি / এইচ.এস.সি পাশের বছর"],
       ["leavingYear", "বিদ্যালয় ত্যাগের বছর"],
       ["education", "শিক্ষাগত যোগ্যতা"],
-      ["profession", "পেশা"],
-      ["payment", "সদস্য চাঁদা প্রদানের বিবরণ"]
+      ["profession", "পেশা"]
     ];
     return `
       ${pageHero(page)}
@@ -859,6 +858,16 @@
                 </select>
               </label>
               <label>সদস্য চাঁদা পরিমান<input name="amount" type="text"></label>
+              <label>পেমেন্ট মাধ্যম
+                <select name="paymentMethod" required>
+                  <option value="">নির্বাচন করুন</option>
+                  <option value="bKash">bKash</option>
+                  <option value="Nagad">Nagad</option>
+                </select>
+              </label>
+              <label>যে নম্বর থেকে পেমেন্ট করা হয়েছে<input name="paymentMobile" type="text" placeholder="01XXXXXXXXX"></label>
+              <label>Transaction ID<input name="transactionId" type="text"></label>
+              <label>পেমেন্টের তারিখ<input name="paymentDate" type="date"></label>
               <label class="wide-field">অঙ্গীকার
                 <textarea name="promise">আমি অঙ্গিকার করছি যে সংগঠনের সদস্য হিসাবে অন্তর্ভুক্ত হলে আমি সংগঠনের সকল আদর্শ, উদ্দেশ্য, নীতিমালা মেনে চলতে বাধ্য থাকব।</textarea>
               </label>
@@ -1014,7 +1023,9 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-    if (!response.ok) throw new Error("Submit failed");
+    const text = await response.text();
+    const result = text ? JSON.parse(text) : {};
+    if (!response.ok) throw new Error(result.error || "Submit failed");
     form.reset();
     status.textContent = "সফলভাবে জমা হয়েছে।";
   }

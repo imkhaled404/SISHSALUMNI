@@ -776,6 +776,10 @@
         ["batch", "Batch"],
         ["memberType", "Member type"],
         ["amount", "Amount"],
+        ["paymentMethod", "Payment method"],
+        ["paymentMobile", "Payment number"],
+        ["transactionId", "Transaction ID"],
+        ["paymentDate", "Payment date"],
         ["message", "Message"]
       ]
       : [
