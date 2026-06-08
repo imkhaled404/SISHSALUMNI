@@ -43,6 +43,11 @@ const adminPassword = process.env.ADMIN_PASSWORD || "admin123";
 const supabaseStorageUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseStorageKey = process.env.SUPABASE_STORAGE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const supabaseStorageBucket = process.env.SUPABASE_STORAGE_BUCKET || "";
+const githubUploadToken = process.env.GITHUB_UPLOAD_TOKEN || process.env.GITHUB_TOKEN || "";
+const githubUploadRepo = process.env.GITHUB_UPLOAD_REPO || process.env.GITHUB_REPOSITORY || "";
+const githubUploadBranch = process.env.GITHUB_UPLOAD_BRANCH || "master";
+const githubUploadDir = process.env.GITHUB_UPLOAD_DIR || "public/assets/uploads";
+const githubUploadPublicBaseUrl = process.env.GITHUB_UPLOAD_PUBLIC_BASE_URL || "";
 const forcePersistentUploads = ["true", "1", "yes"].includes(String(process.env.REQUIRE_PERSISTENT_UPLOADS || "").toLowerCase());
 const runningOnRender = !!(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL);
 const mirrorUploadsToLocal = ["true", "1", "yes"].includes(String(process.env.MIRROR_UPLOADS_TO_LOCAL || "").toLowerCase());
@@ -277,6 +282,24 @@ function supabaseStorageConfigError() {
   return "";
 }
 
+function githubStorageConfigError() {
+  if (!githubUploadRepo) return "GITHUB_UPLOAD_REPO is required for GitHub uploads. Use owner/repo format.";
+  if (!githubUploadToken) return "GITHUB_UPLOAD_TOKEN is required for GitHub uploads.";
+  return "";
+}
+
+function hasGithubStorageConfig() {
+  return !!githubUploadRepo && !!githubUploadToken;
+}
+
+function persistentUploadConfigError() {
+  return [
+    "Persistent upload storage is not configured.",
+    "Use Supabase Storage with SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and SUPABASE_STORAGE_BUCKET,",
+    "or use GitHub uploads with GITHUB_UPLOAD_TOKEN and GITHUB_UPLOAD_REPO."
+  ].join(" ");
+}
+
 function getStorageAssetPath(filename, subdir = "") {
   const ext = path.extname(String(filename || "")).toLowerCase();
   const rawBase = path.basename(String(filename || "image"), ext) || "image";
@@ -286,9 +309,19 @@ function getStorageAssetPath(filename, subdir = "") {
   return [...segments, uniqueName].join("/");
 }
 
+function getGithubAssetPath(filename, subdir = "") {
+  const baseSegments = cleanAssetSubdir(githubUploadDir);
+  const storagePath = getStorageAssetPath(filename, subdir);
+  return [...baseSegments, ...storagePath.split("/")].join("/");
+}
+
+function encodePathForUrl(value) {
+  return String(value || "").split("/").map(encodeURIComponent).join("/");
+}
+
 async function uploadToSupabaseStorage({ filename, buffer, subdir = "" }) {
   const configError = supabaseStorageConfigError();
-  if (configError && (supabaseStorageBucket || forcePersistentUploads || runningOnRender)) {
+  if (configError && (supabaseStorageUrl || supabaseStorageBucket || supabaseStorageKey)) {
     return { error: configError };
   }
   const storage = getSupabaseStorageClient();
@@ -318,6 +351,43 @@ async function uploadToSupabaseStorage({ filename, buffer, subdir = "" }) {
   return { ok: true, path: publicUrl, storage: "supabase", storagePath };
 }
 
+async function uploadToGithubStorage({ filename, buffer, subdir = "" }) {
+  if (!hasGithubStorageConfig()) return null;
+  const configError = githubStorageConfigError();
+  if (configError) return { error: configError };
+
+  const storagePath = getGithubAssetPath(filename, subdir);
+  const apiUrl = `https://api.github.com/repos/${githubUploadRepo}/contents/${encodePathForUrl(storagePath)}`;
+  const response = await fetch(apiUrl, {
+    method: "PUT",
+    headers: {
+      "Accept": "application/vnd.github+json",
+      "Authorization": `Bearer ${githubUploadToken}`,
+      "Content-Type": "application/json",
+      "User-Agent": "sishs-alumni-site",
+      "X-GitHub-Api-Version": "2022-11-28"
+    },
+    body: JSON.stringify({
+      message: `Upload ${path.basename(storagePath)}`,
+      content: buffer.toString("base64"),
+      branch: githubUploadBranch
+    })
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = payload.message ? `: ${payload.message}` : "";
+    return { error: `GitHub upload failed${detail}` };
+  }
+
+  const encodedPath = encodePathForUrl(storagePath);
+  const publicUrl = githubUploadPublicBaseUrl
+    ? `${githubUploadPublicBaseUrl.replace(/\/$/, "")}/${encodedPath}`
+    : `https://raw.githubusercontent.com/${githubUploadRepo}/${encodeURIComponent(githubUploadBranch)}/${encodedPath}`;
+
+  return { ok: true, path: publicUrl, storage: "github", storagePath };
+}
+
 async function saveAssetImage({ filename, base64, subdir = "", maxBytes = 6 * 1024 * 1024, allowedExts = assetUploadExts }) {
   const ext = path.extname(String(filename || "")).toLowerCase();
   if (!allowedExts.has(ext)) {
@@ -334,20 +404,27 @@ async function saveAssetImage({ filename, base64, subdir = "", maxBytes = 6 * 10
     return { error: `Image must be ${Math.round(maxBytes / 1024 / 1024)}MB or smaller` };
   }
 
-  const uploaded = await uploadToSupabaseStorage({ filename: String(filename || "image.png"), buffer, subdir });
-  if (uploaded?.error) return uploaded;
-  if (uploaded?.ok && !mirrorUploadsToLocal) return uploaded;
+  let githubUploaded = null;
+  if (hasGithubStorageConfig()) {
+    githubUploaded = await uploadToGithubStorage({ filename: String(filename || "image.png"), buffer, subdir });
+    if (githubUploaded?.error) return githubUploaded;
+    if (githubUploaded?.ok && !mirrorUploadsToLocal) return githubUploaded;
+  }
 
-  if (!uploaded && (runningOnRender || forcePersistentUploads)) {
+  const supabaseUploaded = await uploadToSupabaseStorage({ filename: String(filename || "image.png"), buffer, subdir });
+  if (supabaseUploaded?.error) return supabaseUploaded;
+  if (supabaseUploaded?.ok && !mirrorUploadsToLocal) return supabaseUploaded;
+
+  if (!supabaseUploaded?.ok && !githubUploaded?.ok && (runningOnRender || forcePersistentUploads)) {
     return {
-      error: supabaseStorageConfigError() || "Persistent upload storage is not configured. Set SUPABASE_STORAGE_BUCKET for Supabase Storage, or attach a Render persistent disk."
+      error: persistentUploadConfigError()
     };
   }
 
   const { filePath, publicPath } = await getAvailableAssetName(String(filename || "image.png"), subdir);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, buffer);
-  return uploaded || { ok: true, path: publicPath, storage: "local" };
+  return supabaseUploaded || githubUploaded || { ok: true, path: publicPath, storage: "local" };
 }
 
 function normalizeStaticPath(urlPath) {
