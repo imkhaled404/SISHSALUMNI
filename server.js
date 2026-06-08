@@ -5,6 +5,7 @@ const path = require("path");
 const crypto = require("crypto");
 const net = require("net");
 const tls = require("tls");
+const { execFileSync } = require("child_process");
 const {
   getPublicSite,
   getAdminSite,
@@ -38,6 +39,30 @@ const {
 const root = __dirname;
 const publicDir = path.join(root, "public");
 const port = Number(process.env.PORT || 3000);
+function normalizeGithubRepo(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const normalized = raw
+    .replace(/^https?:\/\/github\.com\//i, "")
+    .replace(/^git@github\.com:/i, "")
+    .replace(/^ssh:\/\/git@github\.com\//i, "")
+    .replace(/\.git$/i, "")
+    .replace(/^\/+|\/+$/g, "");
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalized) ? normalized : "";
+}
+
+function getGithubRepoFromRemote() {
+  try {
+    return normalizeGithubRepo(execFileSync("git", ["config", "--get", "remote.origin.url"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }));
+  } catch {
+    return "";
+  }
+}
+
 const adminUser = process.env.ADMIN_USER || "admin";
 const adminPassword = process.env.ADMIN_PASSWORD || "admin123";
 const supabaseStorageUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -45,7 +70,7 @@ const supabaseStorageKey = process.env.SUPABASE_STORAGE_SERVICE_ROLE_KEY || proc
 const supabaseStorageBucket = process.env.SUPABASE_STORAGE_BUCKET || "";
 const uploadStorageProvider = String(process.env.UPLOAD_STORAGE_PROVIDER || "github").toLowerCase();
 const githubUploadToken = process.env.GITHUB_UPLOAD_TOKEN || process.env.GITHUB_TOKEN || "";
-const githubUploadRepo = process.env.GITHUB_UPLOAD_REPO || process.env.GITHUB_REPOSITORY || "";
+const githubUploadRepo = normalizeGithubRepo(process.env.GITHUB_UPLOAD_REPO || process.env.GITHUB_REPOSITORY) || getGithubRepoFromRemote();
 const githubUploadBranch = process.env.GITHUB_UPLOAD_BRANCH || "master";
 const githubUploadDir = process.env.GITHUB_UPLOAD_DIR || "public/assets/uploads";
 const githubUploadPublicBaseUrl = process.env.GITHUB_UPLOAD_PUBLIC_BASE_URL || "";
@@ -53,8 +78,9 @@ const forcePersistentUploads = ["true", "1", "yes"].includes(String(process.env.
 const runningOnRender = !!(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL);
 const mirrorUploadsToLocal = ["true", "1", "yes"].includes(String(process.env.MIRROR_UPLOADS_TO_LOCAL || "").toLowerCase());
 const sessions = new Map();
-const assetUploadExts = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"]);
-const memberImageUploadExts = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
+const commonImageExts = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".avif", ".bmp", ".ico", ".tif", ".tiff", ".heic", ".heif"];
+const assetUploadExts = new Set(commonImageExts);
+const memberImageUploadExts = new Set(commonImageExts.filter((ext) => ext !== ".svg"));
 let supabaseStorageClient = null;
 
 const permissionAliases = {
@@ -84,7 +110,13 @@ const mimeTypes = {
   ".png": "image/png",
   ".gif": "image/gif",
   ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
   ".svg": "image/svg+xml",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".heic": "image/heic",
+  ".heif": "image/heif",
   ".pdf": "application/pdf",
   ".ico": "image/x-icon"
 };
@@ -284,7 +316,7 @@ function supabaseStorageConfigError() {
 }
 
 function githubStorageConfigError() {
-  if (!githubUploadRepo) return "GITHUB_UPLOAD_REPO is required for GitHub uploads. Use owner/repo format.";
+  if (!githubUploadRepo) return "GITHUB_UPLOAD_REPO is required for GitHub uploads. Use owner/repo format, for example imkhaled404/SISHSALUMNI.";
   if (!githubUploadToken) return "GITHUB_UPLOAD_TOKEN is required for GitHub uploads.";
   return "";
 }
