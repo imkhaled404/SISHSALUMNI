@@ -1401,6 +1401,31 @@ blockquote cite {
   box-shadow: 0 0 0 3px rgba(27, 67, 50, 0.10);
 }
 
+.committee-type-section {
+  margin-top: 34px;
+}
+
+.committee-type-heading {
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+}
+
+.committee-type-heading span {
+  display: block;
+  color: var(--gold);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.committee-type-heading h3 {
+  margin: 4px 0 0;
+  color: var(--green);
+  font-size: clamp(24px, 3vw, 36px);
+}
+
 /* ============================================================
    FORMS
    ============================================================ */
@@ -2485,6 +2510,67 @@ select:focus {
   border: 1px solid #d8e0ea;
   border-radius: 6px;
   background: #f8fafc;
+}
+
+.committee-member-picker {
+  position: relative;
+}
+
+.select2-lite {
+  position: relative;
+}
+
+.select2-lite input {
+  width: 100%;
+}
+
+.select2-lite-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 300px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid #cfd9e6;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.14);
+}
+
+.select2-lite-menu button {
+  width: 100%;
+  display: block;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #172033;
+  text-align: left;
+  cursor: pointer;
+}
+
+.select2-lite-menu button:hover,
+.select2-lite-menu button:focus {
+  background: #eef6f2;
+  outline: none;
+}
+
+.select2-lite-menu strong,
+.select2-lite-menu span {
+  display: block;
+}
+
+.select2-lite-menu span,
+.select2-lite-menu p {
+  margin: 3px 0 0;
+  color: #667085;
+  font-size: 13px;
+}
+
+.select2-lite-menu p {
+  padding: 10px 12px;
 }
 
 .linked-member-card {

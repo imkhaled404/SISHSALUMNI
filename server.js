@@ -38,6 +38,7 @@ const {
 
 const root = __dirname;
 const publicDir = path.join(root, "public");
+const defaultGithubUploadRepo = "imkhaled404/SISHSALUMNI";
 const port = Number(process.env.PORT || 3000);
 function normalizeGithubRepo(value) {
   const raw = String(value || "").trim();
@@ -70,7 +71,7 @@ const supabaseStorageKey = process.env.SUPABASE_STORAGE_SERVICE_ROLE_KEY || proc
 const supabaseStorageBucket = process.env.SUPABASE_STORAGE_BUCKET || "";
 const uploadStorageProvider = String(process.env.UPLOAD_STORAGE_PROVIDER || "github").toLowerCase();
 const githubUploadToken = process.env.GITHUB_UPLOAD_TOKEN || process.env.GITHUB_TOKEN || "";
-const githubUploadRepo = normalizeGithubRepo(process.env.GITHUB_UPLOAD_REPO || process.env.GITHUB_REPOSITORY) || getGithubRepoFromRemote();
+const githubUploadRepo = normalizeGithubRepo(process.env.GITHUB_UPLOAD_REPO || process.env.GITHUB_REPOSITORY) || getGithubRepoFromRemote() || defaultGithubUploadRepo;
 const githubUploadBranch = process.env.GITHUB_UPLOAD_BRANCH || "master";
 const githubUploadDir = process.env.GITHUB_UPLOAD_DIR || "public/assets/uploads";
 const githubUploadPublicBaseUrl = process.env.GITHUB_UPLOAD_PUBLIC_BASE_URL || "";

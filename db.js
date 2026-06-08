@@ -88,6 +88,24 @@ function maybeNumber(value) {
   return Number.isInteger(number) && number > 0 ? number : undefined;
 }
 
+function maybeInteger(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isInteger(number) ? number : fallback;
+}
+
+function committeeType(value) {
+  const type = String(value || "").trim();
+  return type || "Executive Committee";
+}
+
+function committeeStatus(value) {
+  return String(value || "").toLowerCase() === "inactive" ? "inactive" : "active";
+}
+
+function committeeDesignationOrder(person, fallback = 9999) {
+  return maybeInteger(person.designationOrder ?? person.designation_order ?? person.sortOrder ?? person.sort_order, fallback);
+}
+
 function normalizePath(value, fallback = "/") {
   let next = String(value || fallback).trim();
   if (!next.startsWith("/")) next = `/${next}`;
@@ -411,6 +429,7 @@ async function readSite(includePrivate = false) {
     readSimpleRows("gallery", (r) => ({ id: r.id, title: r.title, image: r.image }))
   ]);
   const membersById = new Map(members.map((member) => [String(member.id), member]));
+  const committeeMeta = settings.committeeMeta || {};
 
   const site = {
     updatedAt,
@@ -426,6 +445,13 @@ async function readSite(includePrivate = false) {
       email: membersById.get(String(r.member_id || ""))?.email || r.email || "",
       role: r.role,
       year: r.year,
+      type: committeeType(r.type || committeeMeta[String(r.id)]?.type),
+      status: committeeStatus(r.status || committeeMeta[String(r.id)]?.status),
+      designationOrder: committeeDesignationOrder({
+        designationOrder: r.designation_order ?? committeeMeta[String(r.id)]?.designationOrder,
+        sortOrder: r.sort_order
+      }, r.sort_order ?? 9999),
+      sortOrder: r.sort_order ?? 9999,
       passingYear: r.passing_year || membersById.get(String(r.member_id || ""))?.batch || "",
       biography: r.biography,
       message: r.message,
@@ -1650,6 +1676,58 @@ async function saveSupabaseRows(table, rows, action = `save ${table}`) {
   await deleteSupabaseRowsNotIn(table, keepIds);
 }
 
+function committeeMetaFromRows(rows = []) {
+  return Object.fromEntries(rows
+    .filter((row) => row.id)
+    .map((row) => [String(row.id), {
+      type: committeeType(row.type),
+      status: committeeStatus(row.status),
+      designationOrder: committeeDesignationOrder(row)
+    }]));
+}
+
+function stripCommitteeSchemaFields(row) {
+  const next = { ...row };
+  delete next.type;
+  delete next.status;
+  delete next.designation_order;
+  return next;
+}
+
+async function writeSupabaseCommitteeRows(rows, stripSchemaFields = false) {
+  const keepIds = new Set();
+  for (const row of rows) {
+    const payload = stripSchemaFields ? stripCommitteeSchemaFields(row) : row;
+    if (payload.id) {
+      await upsertSupabase("committee", payload, "save committee");
+      keepIds.add(String(payload.id));
+    } else {
+      const id = await insertSupabaseReturningId("committee", payload, "save committee");
+      row.id = id;
+      keepIds.add(String(id));
+    }
+  }
+  await deleteSupabaseRowsNotIn("committee", keepIds);
+}
+
+async function saveSupabaseCommitteeRows(rows) {
+  let usedMetaFallback = false;
+  try {
+    await writeSupabaseCommitteeRows(rows, false);
+  } catch (error) {
+    if (!isMissingColumn(error)) throw error;
+    usedMetaFallback = true;
+    await writeSupabaseCommitteeRows(rows, true);
+  }
+
+  if (usedMetaFallback || rows.some((row) => row.type || row.status || row.designation_order !== undefined)) {
+    await upsertSupabase("settings", {
+      name: "committeeMeta",
+      value_json: toJson(committeeMetaFromRows(rows))
+    }, "save committee metadata");
+  }
+}
+
 async function saveSupabaseSettings(settings = {}) {
   const keepNames = new Set(Object.keys(settings));
   for (const [name, value] of Object.entries(settings)) {
@@ -1725,16 +1803,19 @@ async function saveSiteSections(data, keys = payloadSectionKeys(data)) {
 
     if (sectionKeys.includes("committee")) {
       let sort = 0;
-      await saveSupabaseRows("committee", (data.committee || []).map((person) => ({
-          id: maybeNumber(person.id),
-          member_id: maybeNumber(person.memberId),
-          role: person.role || "Member",
-          year: person.year || "",
-          passing_year: person.passingYear || "",
-          biography: person.biography || "",
-          message: person.message || "",
-          sort_order: sort++
-      })), "save committee");
+      await saveSupabaseCommitteeRows((data.committee || []).map((person) => ({
+        id: maybeNumber(person.id),
+        member_id: maybeNumber(person.memberId),
+        role: person.role || "Member",
+        year: person.year || "",
+        type: committeeType(person.type),
+        status: committeeStatus(person.status),
+        designation_order: committeeDesignationOrder(person, sort),
+        passing_year: person.passingYear || "",
+        biography: person.biography || "",
+        message: person.message || "",
+        sort_order: maybeInteger(person.sortOrder, sort++)
+      })));
     }
 
     if (sectionKeys.includes("members")) {
@@ -1839,17 +1920,21 @@ async function saveSiteSections(data, keys = payloadSectionKeys(data)) {
     if (sectionKeys.includes("committee")) {
       let sort = 0;
       for (const person of data.committee || []) {
+        const sortOrder = maybeInteger(person.sortOrder, sort++);
         await querySQLite(
-          "INSERT INTO committee (id, member_id, role, year, passing_year, biography, message, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO committee (id, member_id, role, year, type, status, designation_order, passing_year, biography, message, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           [
             maybeNumber(person.id) || null,
             maybeNumber(person.memberId) || null,
             person.role || "Member",
             person.year || "",
+            committeeType(person.type),
+            committeeStatus(person.status),
+            committeeDesignationOrder(person, sortOrder),
             person.passingYear || "",
             person.biography || "",
             person.message || "",
-            sort++
+            sortOrder
           ]
         );
       }
@@ -1956,20 +2041,24 @@ async function replaceSite(data) {
     }
 
     sort = 0;
-    for (const person of data.committee || []) {
+    await saveSupabaseCommitteeRows((data.committee || []).map((person) => {
       const member = findPayloadMember(data, person.memberId);
       const fallback = committeeFallback(person, member);
-      await insertSupabase("committee", {
+      const sortOrder = maybeInteger(person.sortOrder, sort++);
+      return {
         id: maybeNumber(person.id),
         member_id: maybeNumber(person.memberId),
         role: person.role || "Member",
         year: person.year || "",
+        type: committeeType(person.type),
+        status: committeeStatus(person.status),
+        designation_order: committeeDesignationOrder(person, sortOrder),
         passing_year: fallback.passingYear || "",
         biography: person.biography || "",
         message: person.message || "",
-        sort_order: sort++
-      }, "insert committee");
-    }
+        sort_order: sortOrder
+      };
+    }));
 
     sort = 0;
     for (const member of data.members || []) {
@@ -2081,17 +2170,21 @@ async function replaceSiteSQLite(data) {
   for (const person of data.committee || []) {
     const member = findPayloadMember(data, person.memberId);
     const fallback = committeeFallback(person, member);
+    const sortOrder = maybeInteger(person.sortOrder, sort++);
     await querySQLite(
-      "INSERT INTO committee (id, member_id, role, year, passing_year, biography, message, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO committee (id, member_id, role, year, type, status, designation_order, passing_year, biography, message, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         maybeNumber(person.id) || null,
         maybeNumber(person.memberId) || null,
         person.role || "Member",
         person.year || "",
+        committeeType(person.type),
+        committeeStatus(person.status),
+        committeeDesignationOrder(person, sortOrder),
         fallback.passingYear || "",
         person.biography || "",
         person.message || "",
-        sort++
+        sortOrder
       ]
     );
   }
@@ -2156,7 +2249,7 @@ async function init() {
     CREATE TABLE IF NOT EXISTS top_links (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, path TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS hero_slides (id INTEGER PRIMARY KEY AUTOINCREMENT, image TEXT NOT NULL, eyebrow TEXT NOT NULL, title TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS pages (id INTEGER PRIMARY KEY AUTOINCREMENT, page_key TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, subtitle TEXT, image TEXT, render TEXT NOT NULL, download_label TEXT, download_url TEXT, filter TEXT, body_json TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS committee (id INTEGER PRIMARY KEY AUTOINCREMENT, member_id INTEGER, role TEXT NOT NULL, year TEXT NOT NULL, passing_year TEXT, biography TEXT, message TEXT, sort_order INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS committee (id INTEGER PRIMARY KEY AUTOINCREMENT, member_id INTEGER, role TEXT NOT NULL, year TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'Executive Committee', status TEXT NOT NULL DEFAULT 'active', designation_order INTEGER NOT NULL DEFAULT 9999, passing_year TEXT, biography TEXT, message TEXT, sort_order INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT, path TEXT, type TEXT NOT NULL, date TEXT NOT NULL, title TEXT NOT NULL, excerpt TEXT NOT NULL, body_json TEXT NOT NULL, image TEXT, sort_order INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS gallery (id INTEGER PRIMARY KEY AUTOINCREMENT, image TEXT NOT NULL, title TEXT, sort_order INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL, phone TEXT NOT NULL, batch TEXT NOT NULL, message TEXT, status TEXT NOT NULL DEFAULT 'new', payload_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -2170,6 +2263,24 @@ async function init() {
 
   try {
     db.exec("ALTER TABLE committee ADD COLUMN member_id INTEGER");
+  } catch {
+    // Column already exists in newer local databases.
+  }
+
+  try {
+    db.exec("ALTER TABLE committee ADD COLUMN type TEXT NOT NULL DEFAULT 'Executive Committee'");
+  } catch {
+    // Column already exists in newer local databases.
+  }
+
+  try {
+    db.exec("ALTER TABLE committee ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+  } catch {
+    // Column already exists in newer local databases.
+  }
+
+  try {
+    db.exec("ALTER TABLE committee ADD COLUMN designation_order INTEGER NOT NULL DEFAULT 9999");
   } catch {
     // Column already exists in newer local databases.
   }

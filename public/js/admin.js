@@ -72,6 +72,31 @@
     }
   };
 
+  const COMMITTEE_TYPE_OPTIONS = ["Executive Committee", "Advisory Committee"];
+  const COMMITTEE_STATUS_OPTIONS = ["active", "inactive"];
+  const COMMITTEE_ROLE_OPTIONS = [
+    "আহবায়ক",
+    "সিনিয়র যুগ্ম আহবায়ক",
+    "যুগ্ম আহবায়ক",
+    "সদস্য সচিব",
+    "সিনিয়র যুগ্ম সদস্য সচিব",
+    "যুগ্ম সদস্য সচিব",
+    "উপদেষ্টা",
+    "সদস্য",
+    "Member"
+  ];
+  const COMMITTEE_ROLE_ORDER = {
+    "আহবায়ক": 10,
+    "সিনিয়র যুগ্ম আহবায়ক": 20,
+    "যুগ্ম আহবায়ক": 30,
+    "সদস্য সচিব": 40,
+    "সিনিয়র যুগ্ম সদস্য সচিব": 50,
+    "যুগ্ম সদস্য সচিব": 60,
+    "উপদেষ্টা": 70,
+    "সদস্য": 100,
+    "Member": 100
+  };
+
   function normalizePermissions(permissions) {
     const set = new Set(Array.isArray(permissions) ? permissions : []);
     for (const [legacy, modern] of Object.entries(LEGACY_PERMISSIONS)) {
@@ -111,6 +136,28 @@
   const multiline = (items = []) => (Array.isArray(items) ? items : []).join("\n\n");
   const splitParagraphs = (value) => String(value || "").split(/\n{2,}/).map((line) => line.trim()).filter(Boolean);
   const today = () => new Date().toISOString().slice(0, 10);
+
+  const committeeRoleOrder = (role) => COMMITTEE_ROLE_ORDER[String(role || "").trim()] || 999;
+
+  function committeeSession(person = {}) {
+    return String(person.year || "2026-2027").trim() || "2026-2027";
+  }
+
+  function normalizeCommitteePerson(person = {}, index = 0) {
+    const role = person.role || "সদস্য";
+    return {
+      ...person,
+      type: person.type || "Executive Committee",
+      status: String(person.status || "active").toLowerCase() === "inactive" ? "inactive" : "active",
+      year: committeeSession(person),
+      designationOrder: Number.isFinite(Number(person.designationOrder)) ? Number(person.designationOrder) : committeeRoleOrder(role),
+      sortOrder: Number.isFinite(Number(person.sortOrder)) ? Number(person.sortOrder) : index
+    };
+  }
+
+  function normalizeCommitteeList() {
+    state.data.committee = (state.data.committee || []).map((person, index) => normalizeCommitteePerson(person, index));
+  }
 
   function slugify(value, fallback = "item") {
     const slug = String(value || "")
@@ -217,6 +264,18 @@
     `;
   }
 
+  function optionsWithCurrent(options, current) {
+    const list = [...options];
+    const value = String(current || "").trim();
+    if (value && !list.some((item) => String(item) === value)) list.push(value);
+    return list;
+  }
+
+  function committeeSessionOptions(current = "") {
+    const sessions = [...new Set((state.data.committee || []).map((person) => committeeSession(person)).filter(Boolean))];
+    return optionsWithCurrent(sessions.length ? sessions : ["2026-2027"], current).sort().reverse();
+  }
+
   function memberLabel(member) {
     if (!member) return "Select approved member";
     const parts = [
@@ -227,21 +286,71 @@
     return parts.join(" ");
   }
 
+  function banglaSearchAlias(value) {
+    const map = {
+      "অ": "o", "আ": "a", "ই": "i", "ঈ": "i", "উ": "u", "ঊ": "u", "এ": "e", "ঐ": "oi", "ও": "o", "ঔ": "ou",
+      "া": "a", "ি": "i", "ী": "i", "ু": "u", "ূ": "u", "ে": "e", "ৈ": "oi", "ো": "o", "ৌ": "ou",
+      "ক": "k", "খ": "kh", "গ": "g", "ঘ": "gh", "ঙ": "ng", "চ": "ch", "ছ": "ch", "জ": "j", "ঝ": "jh", "ঞ": "n",
+      "ট": "t", "ঠ": "th", "ড": "d", "ঢ": "dh", "ণ": "n", "ত": "t", "থ": "th", "দ": "d", "ধ": "dh", "ন": "n",
+      "প": "p", "ফ": "f", "ব": "b", "ভ": "v", "ম": "m", "য": "j", "য়": "y", "র": "r", "ল": "l",
+      "শ": "sh", "ষ": "sh", "স": "s", "হ": "h", "ড়": "r", "ঢ়": "rh", "ৎ": "t", "ং": "ng", "ঃ": "h", "ঁ": "",
+      "ৃ": "ri", "্": "", "০": "0", "১": "1", "২": "2", "৩": "3", "৪": "4", "৫": "5", "৬": "6", "৭": "7", "৮": "8", "৯": "9"
+    };
+    return String(value || "").split("").map((char) => map[char] ?? char).join("");
+  }
+
+  function memberSearchText(member) {
+    const values = [member.name, member.email, member.phone, member.batch, member.id];
+    return [...values, ...values.map(banglaSearchAlias)]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+  }
+
   function memberById(memberId) {
     return (state.data.members || []).find((member) => String(member.id || "") === String(memberId || "")) || null;
   }
 
-  function memberPicker(selectedMemberId = "") {
-    const members = state.data.members || [];
+  function usedCommitteeMemberIds(session = "") {
+    return new Set((state.data.committee || [])
+      .filter((person) => !session || committeeSession(person) === session)
+      .map((person) => String(person.memberId || ""))
+      .filter(Boolean));
+  }
+
+  function availableCommitteeMembers(session = "") {
+    const usedIds = usedCommitteeMemberIds(session);
+    return (state.data.members || []).filter((member) => {
+      const memberId = String(member.id || "");
+      return memberId && !usedIds.has(memberId);
+    });
+  }
+
+  function memberPicker(person = {}) {
+    const selectedMemberId = person.memberId || "";
+    const session = committeeSession(person);
+    const members = availableCommitteeMembers(session);
     const selectedMember = memberById(selectedMemberId);
+    const placeholder = selectedMember
+      ? `Search unused member for ${session} to replace current member`
+      : `Search unused member for ${session}`;
     return `
-      <label class="admin-field wide-field">
+      <label class="admin-field wide-field committee-member-picker">
         <span>Search and select member</span>
-        <input list="committeeMemberOptions" data-member-search value="${escapeHtml(selectedMember ? memberLabel(selectedMember) : "")}" placeholder="Type a member name, email, or batch">
+        <div class="select2-lite" data-member-picker data-session="${escapeHtml(session)}">
+          <input data-member-search value="" autocomplete="off" placeholder="${escapeHtml(placeholder)}">
+          <div class="select2-lite-menu" data-member-results hidden>
+            ${members.length
+      ? members.map((member) => `
+                <button type="button" data-member-option="${escapeHtml(member.id || "")}" data-search="${escapeHtml(memberSearchText(member))}">
+                  <strong>${escapeHtml(member.name || "Member")}</strong>
+                  <span>${escapeHtml([member.email, member.phone, member.batch ? `Batch ${member.batch}` : ""].filter(Boolean).join(" | "))}</span>
+                </button>
+              `).join("") + `<p data-member-empty hidden>No matching unused members found.</p>`
+      : `<p>No unused members available for ${escapeHtml(session)}.</p>`}
+          </div>
+        </div>
         <input type="hidden" name="memberId" value="${escapeHtml(selectedMemberId || "")}">
-        <datalist id="committeeMemberOptions">
-          ${members.map((member) => `<option value="${escapeHtml(memberLabel(member))}" data-id="${escapeHtml(member.id || "")}"></option>`).join("")}
-        </datalist>
       </label>
     `;
   }
@@ -539,7 +648,7 @@
         <article class="dashboard-panel"><span>Posts</span><strong>${counts.posts}</strong><p>News, Notice, Career, and Event posts.</p></article>
         <article class="dashboard-panel"><span>Members</span><strong>${counts.members}</strong><p>Registered profiles and account links.</p></article>
         <article class="dashboard-panel"><span>Inbox</span><strong>${counts.applications + counts.messages}</strong><p>Applications and contact messages.</p></article>
-        <article class="dashboard-panel"><span>Storage</span><strong>Uploads</strong><p>Images save to Supabase Storage when configured, or local /assets in development.</p></article>
+        <article class="dashboard-panel"><span>Storage</span><strong>GitHub uploads</strong><p>Images upload to the configured GitHub repo and return public raw image URLs.</p></article>
       </div>
       <div class="quick-actions">
         ${availableTabs()
@@ -652,7 +761,10 @@
   }
 
   function itemLabel(item, index) {
-    if (item.memberId) return memberById(item.memberId)?.name || item.name || `Committee ${index + 1}`;
+    if (item.memberId) {
+      const memberName = memberById(item.memberId)?.name || item.name || `Committee ${index + 1}`;
+      return `${memberName} - ${item.role || "Member"} (${committeeSession(item)})`;
+    }
     return item.title || item.name || item.label || item.key || `Item ${index + 1}`;
   }
 
@@ -738,18 +850,22 @@
 
   function renderCommittee() {
     const index = selectedIndex("committee");
-    const person = (state.data.committee || [])[index] || {};
+    const person = normalizeCommitteePerson((state.data.committee || [])[index] || {}, index);
     const member = memberById(person.memberId);
     return `
-      ${panelIntro("Committee", "Select approved members and assign committee role, year, biography, and message.")}
+      ${panelIntro("Committee", "Manage committee sessions, types, active status, designation order, and member assignments.")}
       ${editorToolbar("committee")}
       <form class="admin-form" data-editor="committee" data-index="${index}">
         <div class="form-grid">
           ${field("Database id", "id", person.id || "", "text", { readonly: true })}
-          ${memberPicker(person.memberId || "")}
+          ${selectField("Session", "year", person.year, committeeSessionOptions(person.year))}
+          ${selectField("Status", "status", person.status, COMMITTEE_STATUS_OPTIONS)}
+          ${selectField("Committee type", "type", person.type, optionsWithCurrent(COMMITTEE_TYPE_OPTIONS, person.type))}
+          ${memberPicker(person)}
           ${committeeMemberSummary(member, person)}
-          ${field("Role", "role", person.role)}
-          ${field("Year", "year", person.year)}
+          ${selectField("Role / designation", "role", person.role, optionsWithCurrent(COMMITTEE_ROLE_OPTIONS, person.role))}
+          ${field("Designation order", "designationOrder", person.designationOrder, "number")}
+          ${field("Display order", "sortOrder", person.sortOrder, "number")}
           ${field("Batch", "passingYear", person.passingYear || "")}
           ${textarea("Biography", "biography", person.biography || "")}
           ${textarea("Message", "message", person.message || "")}
@@ -1126,6 +1242,13 @@
     if (editor === "committee") {
       const member = memberById(values.memberId);
       next.memberId = values.memberId || "";
+      next.type = values.type || "Executive Committee";
+      next.status = String(values.status || "active").toLowerCase() === "inactive" ? "inactive" : "active";
+      next.year = values.year || "2026-2027";
+      next.designationOrder = Number.isFinite(Number(values.designationOrder))
+        ? Number(values.designationOrder)
+        : committeeRoleOrder(values.role);
+      next.sortOrder = Number.isFinite(Number(values.sortOrder)) ? Number(values.sortOrder) : index;
       if (member) {
         next.passingYear = values.passingYear || member.batch || "";
       }
@@ -1140,7 +1263,10 @@
     if (type === "heroSlides") return { image: "/assets/forum-logo.png", eyebrow: "Welcome", title: "New slide" };
     if (type === "pages") return { key: `page-${now}`, path: `/page-${now}/`, title: "New page", subtitle: "", render: "simple", image: "", body: [""] };
     if (type === "posts") return { slug: `post-${now}`, path: `/post-${now}/`, title: "New post", category: "News", date: today(), image: "/assets/forum-logo.png", excerpt: "", body: [""] };
-    if (type === "committee") return { memberId: "", role: "Member", year: "2026", passingYear: "", biography: "", message: "" };
+    if (type === "committee") {
+      const session = committeeSessionOptions()[0] || "2026-2027";
+      return { memberId: "", role: "সদস্য", type: "Executive Committee", status: "active", year: session, designationOrder: 100, sortOrder: (state.data.committee || []).length, passingYear: "", biography: "", message: "" };
+    }
     if (type === "members") return { name: "New member", email: "", phone: "", address: "", batch: "", type: "General", image: "" };
     if (type === "gallery") return { title: "Gallery image", image: "/assets/forum-logo.png" };
     return {};
@@ -1170,16 +1296,47 @@
       });
     });
 
-    adminApp.querySelectorAll("[data-member-search]").forEach((input) => {
-      input.addEventListener("change", () => {
-        const member = (state.data.members || []).find((item) => memberLabel(item) === input.value.trim());
-        const hidden = input.closest("form")?.querySelector("input[name='memberId']");
-        if (!member) {
-          if (hidden) hidden.value = "";
-          setStatus("Select a member from the suggestion list before saving committee.", "error");
-          return;
-        }
-        if (hidden) hidden.value = member.id || "";
+    adminApp.querySelectorAll("[data-member-picker]").forEach((picker) => {
+      const input = picker.querySelector("[data-member-search]");
+      const menu = picker.querySelector("[data-member-results]");
+      const options = [...picker.querySelectorAll("[data-member-option]")];
+
+      const updateResults = () => {
+        const query = input.value.trim().toLowerCase();
+        let visibleCount = 0;
+        options.forEach((option) => {
+          const visible = !query || (option.dataset.search || "").includes(query);
+          option.hidden = !visible;
+          if (visible) visibleCount += 1;
+        });
+        const empty = menu.querySelector("[data-member-empty]");
+        if (empty) empty.hidden = visibleCount > 0;
+        menu.hidden = false;
+      };
+
+      input.addEventListener("focus", updateResults);
+      input.addEventListener("input", updateResults);
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") menu.hidden = true;
+      });
+
+      options.forEach((option) => {
+        option.addEventListener("click", () => {
+          const form = picker.closest("form");
+          const hidden = form?.querySelector("input[name='memberId']");
+          const member = memberById(option.dataset.memberOption);
+          if (!member || !hidden) return;
+          hidden.value = member.id || "";
+          input.value = "";
+          collectCurrentForm();
+          renderAdmin();
+          setStatus(`${member.name || "Member"} selected for committee.`, "success");
+        });
+      });
+    });
+
+    adminApp.querySelectorAll('form[data-editor="committee"] select[name="year"], form[data-editor="committee"] select[name="type"], form[data-editor="committee"] select[name="status"]').forEach((select) => {
+      select.addEventListener("change", () => {
         collectCurrentForm();
         renderAdmin();
       });
@@ -1632,6 +1789,7 @@
       if (!state.data.pages) state.data.pages = [];
       if (!state.data.posts) state.data.posts = [];
       if (!state.data.committee) state.data.committee = [];
+      normalizeCommitteeList();
       if (!state.data.members) state.data.members = [];
       if (!state.data.gallery) state.data.gallery = [];
       if (!state.data.applications) state.data.applications = [];

@@ -47,9 +47,19 @@ REQUIRE_PERSISTENT_UPLOADS=true
 
 Add `GITHUB_UPLOAD_TOKEN` separately as a secret value. Do not commit it.
 
-If `GITHUB_UPLOAD_REPO` is missing locally, the server tries to read `owner/repo` from `git remote origin`. Render production should still set `GITHUB_UPLOAD_REPO` explicitly.
+If `GITHUB_UPLOAD_REPO` is missing locally, the server tries to read `owner/repo` from `git remote origin`, then falls back to this project repo. Render production should still set `GITHUB_UPLOAD_REPO` explicitly.
 
 Admin asset uploads accept common image formats: `jpg`, `jpeg`, `png`, `gif`, `webp`, `svg`, `avif`, `bmp`, `ico`, `tif`, `tiff`, `heic`, and `heif`.
+
+## Committee sessions
+
+Committee records support sessions such as `2026-2027`, committee type, active/inactive status, and designation order. Local SQLite adds these columns automatically. In Supabase, add these columns to the `committee` table before saving committee session fields:
+
+```sql
+alter table committee add column if not exists type text not null default 'Executive Committee';
+alter table committee add column if not exists status text not null default 'active';
+alter table committee add column if not exists designation_order integer not null default 9999;
+```
 
 For public website images, the upload repo or returned URL must be publicly readable. If you use a CDN or another public base URL for that folder, set:
 

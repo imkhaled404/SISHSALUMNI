@@ -83,10 +83,46 @@
   const committeeYears = () =>
     [...new Set(state.data.committee.map((p) => p.year || "২০২২"))].sort((a, b) => yearScore(b) - yearScore(a));
 
+  const committeeSession = (person = {}) => String(person.year || "2026-2027").trim() || "2026-2027";
+  const committeeType = (person = {}) => String(person.type || "Executive Committee").trim() || "Executive Committee";
+  const committeeStatus = (person = {}) => String(person.status || "active").toLowerCase() === "inactive" ? "inactive" : "active";
+  const committeeRoleOrder = (role) => ({
+    "আহবায়ক": 10,
+    "সিনিয়র যুগ্ম আহবায়ক": 20,
+    "যুগ্ম আহবায়ক": 30,
+    "সদস্য সচিব": 40,
+    "সিনিয়র যুগ্ম সদস্য সচিব": 50,
+    "যুগ্ম সদস্য সচিব": 60,
+    "উপদেষ্টা": 70,
+    "সদস্য": 100,
+    "Member": 100
+  }[String(role || "").trim()] || 999);
+
+  const committeeSortValue = (person, key, fallback) => {
+    const number = Number(person?.[key]);
+    return Number.isFinite(number) ? number : fallback;
+  };
+
+  const sortCommitteePeople = (people = []) =>
+    [...people].sort((a, b) =>
+      committeeSortValue(a, "designationOrder", committeeRoleOrder(a.role)) - committeeSortValue(b, "designationOrder", committeeRoleOrder(b.role)) ||
+      committeeSortValue(a, "sortOrder", 9999) - committeeSortValue(b, "sortOrder", 9999) ||
+      String(a.name || "").localeCompare(String(b.name || ""))
+    );
+
+  function committeeSessionOptions(activeOnly = false) {
+    const people = activeOnly
+      ? state.data.committee.filter((person) => committeeStatus(person) === "active")
+      : state.data.committee;
+    return [...new Set(people.map((person) => committeeSession(person)).filter(Boolean))]
+      .sort((a, b) => yearScore(b) - yearScore(a));
+  }
+
   function activeCommitteeYear() {
-    const years = committeeYears();
+    const years = committeeSessionOptions(false);
+    const activeYears = committeeSessionOptions(true);
     if (!state.committeeYear || !years.includes(state.committeeYear)) {
-      state.committeeYear = years[0] || "";
+      state.committeeYear = activeYears[0] || years[0] || "";
     }
     return state.committeeYear;
   }
@@ -262,10 +298,17 @@
   }
 
   /* ── Committee Cards ─────────────────────────────────────── */
-  function committeeCards(limit, year = "") {
-    const scoped = year
-      ? state.data.committee.filter((p) => (p.year || "২০২২") === year)
-      : state.data.committee;
+  function committeeCards(limit, yearOrOptions = "", maybeOptions = {}) {
+    const options = typeof yearOrOptions === "object"
+      ? yearOrOptions
+      : { ...maybeOptions, year: yearOrOptions };
+    const year = options.year || "";
+    const scoped = sortCommitteePeople((state.data.committee || []).filter((person) => {
+      if (year && committeeSession(person) !== year) return false;
+      if (options.activeOnly && committeeStatus(person) !== "active") return false;
+      if (options.type && committeeType(person) !== options.type) return false;
+      return true;
+    }));
     const people = limit ? scoped.slice(0, limit) : scoped;
 
     if (!people.length) {
@@ -276,7 +319,7 @@
       <div class="team-grid">
         ${people.map((person, idx) => {
       const slug = encodeURIComponent(person.name.trim().toLowerCase().replaceAll(" ", "-"));
-      const profileUrl = `/committee-member/${slug}/?ci=${scoped.indexOf(person)}`;
+      const profileUrl = `/committee-member/${slug}/?id=${encodeURIComponent(person.id || "")}&ci=${scoped.indexOf(person)}`;
       return `
             <article class="team-card" data-profile-url="${escapeHtml(profileUrl)}">
               <div class="team-photo">
@@ -285,9 +328,10 @@
                      onerror="this.src='/assets/forum-logo.png'">
               </div>
               <div class="team-info">
-                <span class="team-year">${escapeHtml(person.year || "২০২২")}</span>
+                <span class="team-year">${escapeHtml(committeeSession(person))}</span>
                 <h3>${escapeHtml(person.name)}</h3>
                 <p>${escapeHtml(person.role)}</p>
+                <p class="team-detail">${escapeHtml(committeeType(person))}</p>
                 ${person.passingYear ? `<p class="team-detail">ব্যাচ: ${escapeHtml(person.passingYear)}</p>` : ""}
               </div>
             </article>
@@ -301,10 +345,14 @@
   function committeeMemberPage() {
     // Get member index from URL query param
     const params = new URLSearchParams(window.location.search);
+    const id = params.get("id") || "";
     const ci = parseInt(params.get("ci") ?? "0", 10);
     const year = activeCommitteeYear();
-    const scopedPeople = state.data.committee.filter((p) => (p.year || "২০২২") === year);
-    const person = scopedPeople[ci] || state.data.committee[ci] || state.data.committee[0];
+    const scopedPeople = sortCommitteePeople(state.data.committee.filter((p) => committeeSession(p) === year));
+    const person = state.data.committee.find((p) => String(p.id || "") === String(id))
+      || scopedPeople[ci]
+      || state.data.committee[ci]
+      || state.data.committee[0];
 
     if (!person) {
       return `
@@ -332,7 +380,7 @@
                    onerror="this.src='/assets/forum-logo.png'">
               <div class="profile-name">${escapeHtml(person.name)}</div>
               <div class="profile-role">${escapeHtml(person.role)}</div>
-              <span class="profile-year-badge">কমিটি ${escapeHtml(person.year || "২০২২")}</span>
+              <span class="profile-year-badge">${escapeHtml(committeeType(person))} ${escapeHtml(committeeSession(person))}</span>
               <div class="profile-contact">
                 ${person.passingYear ? `<div class="profile-contact-item">🎓 ব্যাচ: ${escapeHtml(person.passingYear)}</div>` : ""}
                 ${person.phone ? `<div class="profile-contact-item">📞 ${escapeHtml(person.phone)}</div>` : ""}
@@ -343,6 +391,8 @@
             <div class="profile-body-col">
               <h2>${escapeHtml(person.name)}</h2>
               <p><strong>পদবি:</strong> ${escapeHtml(person.role)}</p>
+              <p><strong>কমিটি:</strong> ${escapeHtml(committeeType(person))}</p>
+              <p><strong>সেশন:</strong> ${escapeHtml(committeeSession(person))}</p>
               ${person.passingYear ? `<p><strong>ব্যাচ:</strong> ${escapeHtml(person.passingYear)}</p>` : ""}
               ${person.phone ? `<p><strong>ফোন:</strong> ${escapeHtml(person.phone)}</p>` : ""}
               ${person.bio ? `<p>${escapeHtml(person.bio)}</p>` : `
@@ -479,7 +529,7 @@
       <section class="content-section soft-band">
         <div class="container">
           ${sectionHeading("আহবায়ক কমিটি", `${year} সালের কমিটির সদস্যদের সাথে পরিচিত হোন`, "কমিটি")}
-          ${committeeCards(8, year)}
+          ${committeeCards(8, { year, activeOnly: true, type: "Executive Committee" })}
           <div class="center-action"><a class="skew-button" href="/committee/">সব সদস্য দেখুন</a></div>
         </div>
       </section>
@@ -517,7 +567,7 @@
       <section class="content-section soft-band">
         <div class="container">
           ${sectionHeading("কার্যনির্বাহী কমিটি", `${year} সালের কার্যনির্বাহী কমিটির সদস্যগণ`)}
-          ${committeeCards(8, year)}
+          ${committeeCards(8, { year, activeOnly: true, type: "Executive Committee" })}
           <div class="center-action"><a class="skew-button" href="/committee/">সব সদস্য দেখুন</a></div>
         </div>
       </section>
@@ -538,8 +588,29 @@
 
   /* ── Committee Page ──────────────────────────────────────── */
   function committeePage(page) {
-    const years = committeeYears();
+    const years = committeeSessionOptions(false);
     const year = activeCommitteeYear();
+    const sessionPeople = (state.data.committee || []).filter((person) => committeeSession(person) === year);
+    const hasActivePeople = sessionPeople.some((person) => committeeStatus(person) === "active");
+    const scoped = sortCommitteePeople(hasActivePeople
+      ? sessionPeople.filter((person) => committeeStatus(person) === "active")
+      : sessionPeople);
+    const typeOrder = ["Executive Committee", "Advisory Committee"];
+    const types = [
+      ...typeOrder.filter((type) => scoped.some((person) => committeeType(person) === type)),
+      ...[...new Set(scoped.map((person) => committeeType(person)))].filter((type) => !typeOrder.includes(type))
+    ];
+    const groupedCommittee = types.length
+      ? types.map((type) => `
+          <section class="committee-type-section">
+            <div class="committee-type-heading">
+              <span>${escapeHtml(year)}</span>
+              <h3>${escapeHtml(type)}</h3>
+            </div>
+            ${committeeCards(null, { year, type, activeOnly: hasActivePeople })}
+          </section>
+        `).join("")
+      : `<div class="empty-state">এই সেশনের কোনো কমিটি পাওয়া যায়নি</div>`;
     return `
       ${pageHero(page)}
       <section class="content-section">
@@ -556,7 +627,7 @@
               </select>
             </label>
           </div>
-          ${committeeCards(null, year)}
+          ${groupedCommittee}
         </div>
       </section>
     `;
