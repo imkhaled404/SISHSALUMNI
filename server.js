@@ -40,9 +40,16 @@ const publicDir = path.join(root, "public");
 const port = Number(process.env.PORT || 3000);
 const adminUser = process.env.ADMIN_USER || "admin";
 const adminPassword = process.env.ADMIN_PASSWORD || "admin123";
+const supabaseStorageUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseStorageKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+const supabaseStorageBucket = process.env.SUPABASE_STORAGE_BUCKET || "";
+const forcePersistentUploads = ["true", "1", "yes"].includes(String(process.env.REQUIRE_PERSISTENT_UPLOADS || "").toLowerCase());
+const runningOnRender = !!(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL);
+const mirrorUploadsToLocal = ["true", "1", "yes"].includes(String(process.env.MIRROR_UPLOADS_TO_LOCAL || "").toLowerCase());
 const sessions = new Map();
 const assetUploadExts = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"]);
 const memberImageUploadExts = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
+let supabaseStorageClient = null;
 
 const permissionAliases = {
   manage_posts: ["add_post"],
@@ -252,6 +259,47 @@ async function getAvailableAssetName(filename, subdir = "") {
   return { cleanName, filePath, publicPath };
 }
 
+function getSupabaseStorageClient() {
+  if (!supabaseStorageUrl || !supabaseStorageKey || !supabaseStorageBucket) return null;
+  if (!supabaseStorageClient) {
+    const { createClient } = require("@supabase/supabase-js");
+    supabaseStorageClient = createClient(supabaseStorageUrl, supabaseStorageKey);
+  }
+  return supabaseStorageClient;
+}
+
+function getStorageAssetPath(filename, subdir = "") {
+  const ext = path.extname(String(filename || "")).toLowerCase();
+  const rawBase = path.basename(String(filename || "image"), ext) || "image";
+  const base = cleanAssetSegment(rawBase) || "image";
+  const segments = cleanAssetSubdir(subdir);
+  const uniqueName = `${base}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}${ext}`;
+  return [...segments, uniqueName].join("/");
+}
+
+async function uploadToSupabaseStorage({ filename, buffer, subdir = "" }) {
+  const storage = getSupabaseStorageClient();
+  if (!storage) return null;
+
+  const ext = path.extname(String(filename || "")).toLowerCase();
+  const storagePath = getStorageAssetPath(filename, subdir);
+  const result = await storage.storage.from(supabaseStorageBucket).upload(storagePath, buffer, {
+    cacheControl: "31536000",
+    contentType: mimeTypes[ext] || "application/octet-stream",
+    upsert: false
+  });
+  if (result.error) {
+    return { error: `Storage upload failed: ${result.error.message}` };
+  }
+
+  const publicResult = storage.storage.from(supabaseStorageBucket).getPublicUrl(storagePath);
+  const publicUrl = publicResult?.data?.publicUrl;
+  if (!publicUrl) {
+    return { error: "Storage upload succeeded, but no public URL was returned" };
+  }
+  return { ok: true, path: publicUrl, storage: "supabase", storagePath };
+}
+
 async function saveAssetImage({ filename, base64, subdir = "", maxBytes = 6 * 1024 * 1024, allowedExts = assetUploadExts }) {
   const ext = path.extname(String(filename || "")).toLowerCase();
   if (!allowedExts.has(ext)) {
@@ -268,10 +316,20 @@ async function saveAssetImage({ filename, base64, subdir = "", maxBytes = 6 * 10
     return { error: `Image must be ${Math.round(maxBytes / 1024 / 1024)}MB or smaller` };
   }
 
+  const uploaded = await uploadToSupabaseStorage({ filename: String(filename || "image.png"), buffer, subdir });
+  if (uploaded?.error) return uploaded;
+  if (uploaded?.ok && !mirrorUploadsToLocal) return uploaded;
+
+  if (!uploaded && (runningOnRender || forcePersistentUploads)) {
+    return {
+      error: "Persistent upload storage is not configured. Set SUPABASE_STORAGE_BUCKET for Supabase Storage, or attach a Render persistent disk."
+    };
+  }
+
   const { filePath, publicPath } = await getAvailableAssetName(String(filename || "image.png"), subdir);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, buffer);
-  return { ok: true, path: publicPath };
+  return uploaded || { ok: true, path: publicPath, storage: "local" };
 }
 
 function normalizeStaticPath(urlPath) {

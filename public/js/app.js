@@ -69,6 +69,8 @@
   const paragraphs = (items = []) =>
     items.map((item) => `<p>${escapeHtml(item)}</p>`).join("");
 
+  const categoryKey = (value) => String(value || "").trim().toLowerCase();
+
   const link = (item, className = "") =>
     `<a ${className ? `class="${className}"` : ""} href="${escapeHtml(item.path)}">${escapeHtml(item.label)}</a>`;
 
@@ -417,16 +419,20 @@
 
   /* ── Home Page ───────────────────────────────────────────── */
   function homeEventsSection() {
-    const events = state.data.posts.filter((post) => post.category === "Event");
+    const settings = state.data.settings || {};
+    const events = state.data.posts.filter((post) => {
+      const key = categoryKey(post.category);
+      return key === "event" || key === "events" || key === "ইভেন্ট" || key === "ইভেন্টস";
+    });
     return `
       <section class="content-section event-section">
         <div class="container">
           <div class="event-head">
-            <span class="eyebrow">অ্যালামনাই অ্যাসোসিয়েশন  ইভেন্টস</span>
-            <h2>অ্যালামনাই অ্যাসোসিয়েশন ইভেন্টস</h2>
-            <p>অ্যালামনাই ইভেন্টস সম্পর্কে জানুন</p>
+            <span class="eyebrow">${escapeHtml(settings.homeEventsEyebrow || "অ্যালামনাই অ্যাসোসিয়েশন ইভেন্টস")}</span>
+            <h2>${escapeHtml(settings.homeEventsTitle || "অ্যালামনাই অ্যাসোসিয়েশন ইভেন্টস")}</h2>
+            <p>${escapeHtml(settings.homeEventsSubtitle || "অ্যালামনাই ইভেন্টস সম্পর্কে জানুন")}</p>
           </div>
-          ${events.length ? postCards(events.slice(0, 3)) : `<div class="empty-state">নতুন কোন ইভেন্ট নেই</div>`}
+          ${events.length ? postCards(events.slice(0, 3)) : `<div class="empty-state">${escapeHtml(settings.homeEventsEmptyText || "নতুন কোন ইভেন্ট নেই")}</div>`}
         </div>
       </section>
     `;
@@ -625,6 +631,7 @@
             <thead>
               <tr>
                 <th>#</th>
+                <th>ছবি</th>
                 <th>নাম</th>
                 <th>ই-মেইল</th>
                 <th>ফোন</th>
@@ -637,6 +644,9 @@
               ${visible.length ? visible.map((member, i) =>
       `<tr>
                   <td data-label="#">${start + i + 1}</td>
+                  <td data-label="ছবি">
+                    <img class="member-data-photo" src="${escapeHtml(member.image || "/assets/forum-logo.png")}" alt="${escapeHtml(member.name || "Member")}" onerror="this.src='/assets/forum-logo.png'">
+                  </td>
                   <td data-label="নাম"><strong>${escapeHtml(member.name || "")}</strong></td>
                   <td data-label="ই-মেইল">${escapeHtml(member.email || "")}</td>
                   <td data-label="ফোন">${escapeHtml(member.phone || "")}</td>
@@ -644,7 +654,7 @@
                   <td data-label="ব্যাচ">${escapeHtml(member.batch || "")}</td>
                   <td data-label="ধরণ">${escapeHtml(member.type || "")}</td>
                 </tr>`
-    ).join("") : `<tr><td colspan="7"><div class="empty-state">কোন সদস্য পাওয়া যায়নি।</div></td></tr>`}
+    ).join("") : `<tr><td colspan="8"><div class="empty-state">কোন সদস্য পাওয়া যায়নি।</div></td></tr>`}
             </tbody>
           </table>
         </div>
@@ -1509,6 +1519,10 @@
           if (result.user?.member) {
             const memberIndex = (state.data.members || []).findIndex((item) => String(item.id) === String(result.user.member.id));
             if (memberIndex >= 0) state.data.members[memberIndex] = result.user.member;
+            else {
+              if (!state.data.members) state.data.members = [];
+              state.data.members.push(result.user.member);
+            }
           }
           status.textContent = "তথ্য আপডেট হয়েছে।";
           renderPage({ preserveScroll: true });

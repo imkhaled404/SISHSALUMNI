@@ -536,10 +536,10 @@
       </div>
       <div class="dashboard-grid">
         <article class="dashboard-panel"><span>Pages</span><strong>${counts.pages}</strong><p>Includes Career and Forum pages.</p></article>
-        <article class="dashboard-panel"><span>Posts</span><strong>${counts.posts}</strong><p>News, Notice, and Career circulars.</p></article>
+        <article class="dashboard-panel"><span>Posts</span><strong>${counts.posts}</strong><p>News, Notice, Career, and Event posts.</p></article>
         <article class="dashboard-panel"><span>Members</span><strong>${counts.members}</strong><p>Registered profiles and account links.</p></article>
         <article class="dashboard-panel"><span>Inbox</span><strong>${counts.applications + counts.messages}</strong><p>Applications and contact messages.</p></article>
-        <article class="dashboard-panel"><span>Storage</span><strong>/assets</strong><p>Images upload to the local file system.</p></article>
+        <article class="dashboard-panel"><span>Storage</span><strong>Uploads</strong><p>Images save to Supabase Storage when configured, or local /assets in development.</p></article>
       </div>
       <div class="quick-actions">
         ${availableTabs()
@@ -566,6 +566,10 @@
           ${field("Footer logo path", "footerLogo", settings.footerLogo)}
           ${field("Footer background", "footerBackground", settings.footerBackground)}
           ${field("Bank/contact title", "bankTitle", settings.bankTitle)}
+          ${field("Home events eyebrow", "homeEventsEyebrow", settings.homeEventsEyebrow)}
+          ${field("Home events title", "homeEventsTitle", settings.homeEventsTitle)}
+          ${field("Home events subtitle", "homeEventsSubtitle", settings.homeEventsSubtitle)}
+          ${field("Home events empty text", "homeEventsEmptyText", settings.homeEventsEmptyText)}
           ${textarea("Notice text", "noticeText", settings.noticeText)}
           ${textarea("Bank/contact lines", "bankLines", (settings.bankLines || []).join("\n"))}
         </div>
@@ -638,7 +642,7 @@
   function renderSlides() {
     return `
       ${panelIntro("Hero slides", "Manage the home page hero images and headline text.")}
-      ${editableList("Slides", "Each slide can use a local /assets image path.", "heroSlides", [
+      ${editableList("Slides", "Each slide can use an uploaded image URL or a local /assets path.", "heroSlides", [
       { key: "image", label: "Image path" },
       { key: "eyebrow", label: "Eyebrow" },
       { key: "title", label: "Title" }
@@ -713,7 +717,7 @@
     const index = selectedIndex("posts");
     const post = (state.data.posts || [])[index] || {};
     return `
-      ${panelIntro("News and notices", "Create, edit, and delete posts that appear on News and Notice pages.")}
+      ${panelIntro("News, notices, careers, and events", "Create, edit, and delete posts. Category Event posts appear in the home events section.")}
       ${editorToolbar("posts")}
       <form class="admin-form" data-editor="posts" data-index="${index}">
         <div class="form-grid">
@@ -913,7 +917,7 @@
   function roleHelp(role) {
     if (role === "admin") return "Can access every admin menu.";
     if (role === "custom") return "Can access only selected admin menus.";
-    return "Profile and forum only. No admin panel access.";
+    return "Website login only. The member can update their own profile from the member login page.";
   }
 
   function renderUsers() {

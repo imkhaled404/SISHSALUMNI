@@ -1263,6 +1263,17 @@ blockquote cite {
   color: var(--ink);
 }
 
+.member-data-photo {
+  display: block;
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  object-position: top center;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--green-pale);
+}
+
 .member-pagination {
   display: flex;
   justify-content: flex-end;

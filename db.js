@@ -303,11 +303,17 @@ async function readSubmissions(table) {
 }
 
 function ensureDefaultContent(site) {
+  site.settings = site.settings || {};
   site.pages = site.pages || [];
   site.navigation = site.navigation || [];
   site.topLinks = site.topLinks || [];
   site.posts = site.posts || [];
   site.forumPosts = site.forumPosts || [];
+
+  site.settings.homeEventsEyebrow = site.settings.homeEventsEyebrow || "অ্যালামনাই অ্যাসোসিয়েশন ইভেন্টস";
+  site.settings.homeEventsTitle = site.settings.homeEventsTitle || "অ্যালামনাই অ্যাসোসিয়েশন ইভেন্টস";
+  site.settings.homeEventsSubtitle = site.settings.homeEventsSubtitle || "অ্যালামনাই ইভেন্টস সম্পর্কে জানুন";
+  site.settings.homeEventsEmptyText = site.settings.homeEventsEmptyText || "নতুন কোন ইভেন্ট নেই";
 
   const hasPage = (pathValue) => site.pages.some((page) => normalizePath(page.path) === normalizePath(pathValue));
   const hasNav = (pathValue) => site.navigation.some((item) => normalizePath(item.path) === normalizePath(pathValue));
@@ -1037,7 +1043,7 @@ async function resetUserPassword(userId) {
 }
 
 async function updateMemberProfile(memberId, data) {
-  const row = {
+  const row = cleanRow({
     name: data.name,
     email: data.email,
     phone: data.phone,
@@ -1045,16 +1051,19 @@ async function updateMemberProfile(memberId, data) {
     batch: data.batch,
     type: data.type,
     image: data.image
-  };
+  });
+  if (!Object.keys(row).length) return;
 
   if (isSupabase) {
-    assertSupabase(await supabase.from("members").update(cleanRow(row)).eq("id", memberId), "update member profile");
+    assertSupabase(await supabase.from("members").update(row).eq("id", memberId), "update member profile");
     return;
   }
 
+  const columns = Object.keys(row);
+  const assignments = columns.map((key) => `${key} = ?`).join(", ");
   await querySQLite(
-    "UPDATE members SET name = ?, email = ?, phone = ?, address = ?, batch = ?, type = ?, image = ? WHERE id = ?",
-    [row.name, row.email, row.phone, row.address, row.batch, row.type, row.image, memberId]
+    `UPDATE members SET ${assignments} WHERE id = ?`,
+    [...columns.map((key) => row[key]), memberId]
   );
 }
 
@@ -1586,10 +1595,10 @@ async function saveMembersSection(members = []) {
         [id, ...row]
       );
     } else {
-      await querySQLite(
+      const result = db.prepare(
         "INSERT INTO members (name, email, phone, address, batch, type, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        row
-      );
+      ).run(...row);
+      incomingIds.add(String(Number(result.lastInsertRowid)));
     }
   }
 
