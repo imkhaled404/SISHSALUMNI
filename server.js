@@ -41,7 +41,7 @@ const port = Number(process.env.PORT || 3000);
 const adminUser = process.env.ADMIN_USER || "admin";
 const adminPassword = process.env.ADMIN_PASSWORD || "admin123";
 const supabaseStorageUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseStorageKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+const supabaseStorageKey = process.env.SUPABASE_STORAGE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const supabaseStorageBucket = process.env.SUPABASE_STORAGE_BUCKET || "";
 const forcePersistentUploads = ["true", "1", "yes"].includes(String(process.env.REQUIRE_PERSISTENT_UPLOADS || "").toLowerCase());
 const runningOnRender = !!(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL);
@@ -268,6 +268,15 @@ function getSupabaseStorageClient() {
   return supabaseStorageClient;
 }
 
+function supabaseStorageConfigError() {
+  if (!supabaseStorageUrl) return "SUPABASE_URL is required for persistent uploads.";
+  if (!supabaseStorageBucket) return "SUPABASE_STORAGE_BUCKET is required for persistent uploads.";
+  if (!supabaseStorageKey) {
+    return "SUPABASE_SERVICE_ROLE_KEY is required for Supabase Storage uploads. Do not use the anon or publishable key for server uploads.";
+  }
+  return "";
+}
+
 function getStorageAssetPath(filename, subdir = "") {
   const ext = path.extname(String(filename || "")).toLowerCase();
   const rawBase = path.basename(String(filename || "image"), ext) || "image";
@@ -278,6 +287,10 @@ function getStorageAssetPath(filename, subdir = "") {
 }
 
 async function uploadToSupabaseStorage({ filename, buffer, subdir = "" }) {
+  const configError = supabaseStorageConfigError();
+  if (configError && (supabaseStorageBucket || forcePersistentUploads || runningOnRender)) {
+    return { error: configError };
+  }
   const storage = getSupabaseStorageClient();
   if (!storage) return null;
 
@@ -289,6 +302,11 @@ async function uploadToSupabaseStorage({ filename, buffer, subdir = "" }) {
     upsert: false
   });
   if (result.error) {
+    if (/row-level security|violates row-level security|permission denied/i.test(result.error.message || "")) {
+      return {
+        error: "Storage upload failed because Supabase RLS blocked the request. Set SUPABASE_SERVICE_ROLE_KEY to the server-only service role key, then restart/redeploy."
+      };
+    }
     return { error: `Storage upload failed: ${result.error.message}` };
   }
 
@@ -322,7 +340,7 @@ async function saveAssetImage({ filename, base64, subdir = "", maxBytes = 6 * 10
 
   if (!uploaded && (runningOnRender || forcePersistentUploads)) {
     return {
-      error: "Persistent upload storage is not configured. Set SUPABASE_STORAGE_BUCKET for Supabase Storage, or attach a Render persistent disk."
+      error: supabaseStorageConfigError() || "Persistent upload storage is not configured. Set SUPABASE_STORAGE_BUCKET for Supabase Storage, or attach a Render persistent disk."
     };
   }
 

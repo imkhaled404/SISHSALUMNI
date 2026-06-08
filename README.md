@@ -35,6 +35,8 @@ REQUIRE_PERSISTENT_UPLOADS=true
 
 Create a public Supabase Storage bucket named `site-assets` (or use your own bucket name and set `SUPABASE_STORAGE_BUCKET` to match). Uploaded image fields will then save the public Supabase Storage URL in the database, so the image works locally, on Render, and after redeploys.
 
+Use the Supabase **service role** key only on the server, for example in Render environment variables or local `.env`. Do not put it in frontend JavaScript, GitHub, or any `NEXT_PUBLIC_*` variable. The anon/publishable key follows Storage row-level security policies and will usually fail with `new row violates row-level security policy` during server uploads.
+
 Optional local mirror:
 
 ```bash
