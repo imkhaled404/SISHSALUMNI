@@ -252,6 +252,15 @@
     `;
   }
 
+  function displayField(label, value = "", options = {}) {
+    return `
+      <label class="admin-field${options.wide ? " wide-field" : ""}">
+        <span>${escapeHtml(label)}</span>
+        <input type="text" value="${escapeHtml(value)}" readonly>
+      </label>
+    `;
+  }
+
   function textarea(label, name, value = "", options = {}) {
     return `
       <label class="admin-field${options.wide === false ? "" : " wide-field"}">
@@ -319,6 +328,10 @@
     return (state.data.members || []).find((member) => String(member.id || "") === String(memberId || "")) || null;
   }
 
+  function hasSavedId(item = {}) {
+    return Boolean(String(item.id || "").trim());
+  }
+
   function usedCommitteeMemberIds(session = "") {
     return new Set((state.data.committee || [])
       .filter((person) => !session || committeeSession(person) === session)
@@ -339,12 +352,10 @@
     const session = committeeSession(person);
     const members = availableCommitteeMembers(session);
     const selectedMember = memberById(selectedMemberId);
-    const placeholder = selectedMember
-      ? `Search unused member for ${session} to replace current member`
-      : `Search unused member for ${session}`;
+    const placeholder = `Search unused member for ${session} to add`;
     return `
       <label class="admin-field wide-field committee-member-picker">
-        <span>Search and select member</span>
+        <span>Search and add member</span>
         <div class="select2-lite" data-member-picker data-session="${escapeHtml(session)}">
           <input data-member-search value="" autocomplete="off" placeholder="${escapeHtml(placeholder)}">
           <div class="select2-lite-menu" data-member-results hidden>
@@ -796,6 +807,68 @@
     return state.selected[type];
   }
 
+  function selectedItemSnapshot(type = state.tab) {
+    const items = state.data[type] || [];
+    if (!items.length) return null;
+    const index = selectedIndex(type);
+    const item = items[index];
+    if (!item) return null;
+    if (type === "committee") {
+      return {
+        type,
+        index,
+        id: String(item.id || ""),
+        memberId: String(item.memberId || ""),
+        year: committeeSession(item),
+        committeeType: committeeTypeValue(item.type),
+        key: [item.memberId, committeeSession(item), committeeTypeValue(item.type), item.role, item.sortOrder].map((value) => String(value || "")).join("|")
+      };
+    }
+    return {
+      type,
+      index,
+      id: String(item.id || ""),
+      key: String(item.key || item.slug || item.path || item.title || "")
+    };
+  }
+
+  function restoreSelectedItem(snapshot) {
+    if (!snapshot) return;
+    const items = state.data[snapshot.type] || [];
+    if (!items.length) {
+      state.selected[snapshot.type] = 0;
+      return;
+    }
+
+    let index = -1;
+    if (snapshot.id) {
+      index = items.findIndex((item) => String(item.id || "") === snapshot.id);
+    }
+    if (index < 0 && snapshot.type === "committee" && snapshot.memberId) {
+      index = items.findIndex((item) =>
+        String(item.memberId || "") === snapshot.memberId &&
+        committeeSession(item) === snapshot.year &&
+        committeeTypeValue(item.type) === snapshot.committeeType
+      );
+      if (index < 0) {
+        index = items.findIndex((item) =>
+          String(item.memberId || "") === snapshot.memberId &&
+          committeeSession(item) === snapshot.year
+        );
+      }
+      if (index < 0) {
+        index = items.findIndex((item) => String(item.memberId || "") === snapshot.memberId);
+      }
+    }
+    if (index < 0 && snapshot.key) {
+      index = items.findIndex((item) => String(item.key || item.slug || item.path || item.title || "") === snapshot.key);
+    }
+    if (index < 0) {
+      index = Math.min(snapshot.index || 0, items.length - 1);
+    }
+    state.selected[snapshot.type] = Math.max(0, index);
+  }
+
   function editorToolbar(type) {
     const index = selectedIndex(type);
     return `
@@ -860,12 +933,16 @@
     const index = selectedIndex("committee");
     const person = normalizeCommitteePerson((state.data.committee || [])[index] || {}, index);
     const member = memberById(person.memberId);
+    const rowIdLabel = hasSavedId(person) ? person.id : "New / null until save";
+    const memberIdLabel = person.memberId || "No member selected";
     return `
       ${panelIntro("Committee", "Manage committee sessions, types, active status, designation order, and member assignments.")}
       ${editorToolbar("committee")}
       <form class="admin-form" data-editor="committee" data-index="${index}">
+        <input type="hidden" name="id" value="${escapeHtml(person.id || "")}">
         <div class="form-grid">
-          ${field("Database id", "id", person.id || "", "text", { readonly: true })}
+          ${displayField("Committee row id", rowIdLabel)}
+          ${displayField("Selected member id", memberIdLabel)}
           ${selectField("Session", "year", person.year, committeeSessionOptions(person.year))}
           ${selectField("Status", "status", person.status, COMMITTEE_STATUS_OPTIONS)}
           ${selectField("Committee type", "type", person.type, optionsWithCurrent(COMMITTEE_TYPE_OPTIONS, person.type))}
@@ -1238,7 +1315,8 @@
     const index = Number(form.dataset.index);
     if (!Number.isInteger(index) || index < 0 || !state.data[editor] || !state.data[editor][index]) return;
 
-    const next = { ...state.data[editor][index], ...values };
+    const current = state.data[editor][index];
+    const next = { ...current, ...values };
     if (editor === "pages" || editor === "posts") {
       next.body = splitParagraphs(values.body);
       if (editor === "posts") {
@@ -1248,6 +1326,9 @@
     }
     if (editor === "committee") {
       const member = memberById(values.memberId);
+      if (!hasSavedId(current)) {
+        next.id = "";
+      }
       next.memberId = values.memberId || "";
       next.type = committeeTypeValue(values.type);
       next.status = String(values.status || "active").toLowerCase() === "inactive" ? "inactive" : "active";
@@ -1331,8 +1412,32 @@
         option.addEventListener("click", () => {
           const form = picker.closest("form");
           const hidden = form?.querySelector("input[name='memberId']");
+          const idInput = form?.querySelector("input[name='id']");
+          const index = Number(form?.dataset.index);
+          const current = Number.isInteger(index) ? state.data.committee?.[index] : null;
           const member = memberById(option.dataset.memberOption);
           if (!member || !hidden) return;
+          if (hasSavedId(current)) {
+            const values = Object.fromEntries(new FormData(form).entries());
+            collectCurrentForm(form);
+            const next = {
+              ...templateFor("committee"),
+              memberId: member.id || "",
+              year: values.year || committeeSession(current),
+              type: committeeTypeValue(values.type || current?.type),
+              status: String(values.status || current?.status || "active").toLowerCase() === "inactive" ? "inactive" : "active",
+              passingYear: member.batch || "",
+              sortOrder: (state.data.committee || []).length
+            };
+            state.data.committee.push(next);
+            state.selected.committee = state.data.committee.length - 1;
+            renderAdmin();
+            setStatus(`${member.name || "Member"} added as a new unsaved committee entry. Save to create its committee row id.`, "success");
+            return;
+          }
+          if (idInput) {
+            idInput.value = "";
+          }
           hidden.value = member.id || "";
           input.value = "";
           collectCurrentForm(form);
@@ -1754,6 +1859,7 @@
       return;
     }
     collectCurrentForm();
+    const selection = selectedItemSnapshot();
     setStatus("Saving changes...");
     try {
       const result = await api("/api/admin/site", {
@@ -1761,7 +1867,10 @@
         body: JSON.stringify(payloadForCurrentTab()),
         timeoutMs: 600000
       });
-      state.data.updatedAt = result.updatedAt;
+      applyAdminData(await api("/api/admin/site", { timeoutMs: 600000 }));
+      restoreSelectedItem(selection);
+      state.data.updatedAt = state.data.updatedAt || result.updatedAt;
+      renderAdmin();
       setStatus("Changes saved.", "success");
     } catch (error) {
       setStatus(error.message || "Save failed.", "error");
@@ -1778,6 +1887,21 @@
     return {};
   }
 
+  function applyAdminData(data) {
+    state.data = data || {};
+    if (!state.data.navigation) state.data.navigation = [];
+    if (!state.data.topLinks) state.data.topLinks = [];
+    if (!state.data.heroSlides) state.data.heroSlides = [];
+    if (!state.data.pages) state.data.pages = [];
+    if (!state.data.posts) state.data.posts = [];
+    if (!state.data.committee) state.data.committee = [];
+    normalizeCommitteeList();
+    if (!state.data.members) state.data.members = [];
+    if (!state.data.gallery) state.data.gallery = [];
+    if (!state.data.applications) state.data.applications = [];
+    if (!state.data.messages) state.data.messages = [];
+  }
+
   async function loadAdmin() {
     try {
       const me = await api("/api/admin/whoami");
@@ -1789,18 +1913,7 @@
         return;
       }
 
-      state.data = await api("/api/admin/site");
-      if (!state.data.navigation) state.data.navigation = [];
-      if (!state.data.topLinks) state.data.topLinks = [];
-      if (!state.data.heroSlides) state.data.heroSlides = [];
-      if (!state.data.pages) state.data.pages = [];
-      if (!state.data.posts) state.data.posts = [];
-      if (!state.data.committee) state.data.committee = [];
-      normalizeCommitteeList();
-      if (!state.data.members) state.data.members = [];
-      if (!state.data.gallery) state.data.gallery = [];
-      if (!state.data.applications) state.data.applications = [];
-      if (!state.data.messages) state.data.messages = [];
+      applyAdminData(await api("/api/admin/site"));
 
       state.users = [];
       state.usersLoaded = false;
