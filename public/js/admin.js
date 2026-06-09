@@ -72,7 +72,15 @@
     }
   };
 
-  const COMMITTEE_TYPE_OPTIONS = ["Executive Committee", "Advisory Committee"];
+  const COMMITTEE_TYPE_OPTIONS = ["উপদেষ্টা কমিটি", "আহবায়ক কমিটি", "কার্যনির্বাহী কমিটি"];
+  const COMMITTEE_TYPE_ALIASES = {
+    "Advisory Committee": "উপদেষ্টা কমিটি",
+    "Executive Committee": "আহবায়ক কমিটি"
+  };
+  const committeeTypeValue = (value) => {
+    const type = String(value || "").trim();
+    return COMMITTEE_TYPE_ALIASES[type] || type || "আহবায়ক কমিটি";
+  };
   const COMMITTEE_STATUS_OPTIONS = ["active", "inactive"];
   const COMMITTEE_ROLE_OPTIONS = [
     "আহবায়ক",
@@ -147,7 +155,7 @@
     const role = person.role || "সদস্য";
     return {
       ...person,
-      type: person.type || "Executive Committee",
+      type: committeeTypeValue(person.type),
       status: String(person.status || "active").toLowerCase() === "inactive" ? "inactive" : "active",
       year: committeeSession(person),
       designationOrder: Number.isFinite(Number(person.designationOrder)) ? Number(person.designationOrder) : committeeRoleOrder(role),
@@ -1212,8 +1220,7 @@
     `;
   }
 
-  function collectCurrentForm() {
-    const form = adminApp.querySelector("[data-editor]");
+  function collectCurrentForm(form = adminApp.querySelector("[data-editor]")) {
     if (!form) return;
 
     const editor = form.dataset.editor;
@@ -1229,7 +1236,7 @@
     }
 
     const index = Number(form.dataset.index);
-    if (!state.data[editor] || !state.data[editor][index]) return;
+    if (!Number.isInteger(index) || index < 0 || !state.data[editor] || !state.data[editor][index]) return;
 
     const next = { ...state.data[editor][index], ...values };
     if (editor === "pages" || editor === "posts") {
@@ -1242,7 +1249,7 @@
     if (editor === "committee") {
       const member = memberById(values.memberId);
       next.memberId = values.memberId || "";
-      next.type = values.type || "Executive Committee";
+      next.type = committeeTypeValue(values.type);
       next.status = String(values.status || "active").toLowerCase() === "inactive" ? "inactive" : "active";
       next.year = values.year || "2026-2027";
       next.designationOrder = Number.isFinite(Number(values.designationOrder))
@@ -1265,7 +1272,7 @@
     if (type === "posts") return { slug: `post-${now}`, path: `/post-${now}/`, title: "New post", category: "News", date: today(), image: "/assets/forum-logo.png", excerpt: "", body: [""] };
     if (type === "committee") {
       const session = committeeSessionOptions()[0] || "2026-2027";
-      return { memberId: "", role: "সদস্য", type: "Executive Committee", status: "active", year: session, designationOrder: 100, sortOrder: (state.data.committee || []).length, passingYear: "", biography: "", message: "" };
+      return { memberId: "", role: "সদস্য", type: "আহবায়ক কমিটি", status: "active", year: session, designationOrder: 100, sortOrder: (state.data.committee || []).length, passingYear: "", biography: "", message: "" };
     }
     if (type === "members") return { name: "New member", email: "", phone: "", address: "", batch: "", type: "General", image: "" };
     if (type === "gallery") return { title: "Gallery image", image: "/assets/forum-logo.png" };
@@ -1328,7 +1335,7 @@
           if (!member || !hidden) return;
           hidden.value = member.id || "";
           input.value = "";
-          collectCurrentForm();
+          collectCurrentForm(form);
           renderAdmin();
           setStatus(`${member.name || "Member"} selected for committee.`, "success");
         });
@@ -1337,7 +1344,7 @@
 
     adminApp.querySelectorAll('form[data-editor="committee"] select[name="year"], form[data-editor="committee"] select[name="type"], form[data-editor="committee"] select[name="status"]').forEach((select) => {
       select.addEventListener("change", () => {
-        collectCurrentForm();
+        collectCurrentForm(select.closest("form"));
         renderAdmin();
       });
     });

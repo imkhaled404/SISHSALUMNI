@@ -1200,6 +1200,19 @@ blockquote cite {
   background: var(--green-pale);
 }
 
+.member-data-table tbody tr[data-member-profile-url] {
+  cursor: pointer;
+}
+
+.member-data-table tbody tr[data-member-profile-url]:focus-visible {
+  outline: 3px solid rgba(193, 140, 44, 0.45);
+  outline-offset: -3px;
+}
+
+.member-data-table tbody tr[data-member-profile-url]:focus-visible td {
+  background: var(--gold-pale);
+}
+
 .member-data-panel {
   display: grid;
   gap: 18px;
@@ -2093,6 +2106,23 @@ select:focus {
   font-size: 13px;
   color: rgba(255, 255, 255, 0.55);
   border-top: 1px solid rgba(201, 162, 39, 0.25);
+}
+
+.footer-dev-credit {
+  display: block;
+  margin-top: 6px;
+}
+
+.footer-dev-credit a {
+  color: var(--gold);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.footer-dev-credit a:hover,
+.footer-dev-credit a:focus-visible {
+  color: var(--gold-light);
+  text-decoration: underline;
 }
 
 /* ============================================================

@@ -74,17 +74,30 @@
   const link = (item, className = "") =>
     `<a ${className ? `class="${className}"` : ""} href="${escapeHtml(item.path)}">${escapeHtml(item.label)}</a>`;
 
+  const profileSlug = (value, fallback = "profile") =>
+    encodeURIComponent(String(value || fallback).trim().toLowerCase().replace(/\s+/g, "-"));
+
   const yearScore = (year) => {
     const digits = String(year || "").replace(/[০-৯]/g, (d) => "০১২৩৪৫৬৭৮৯".indexOf(d));
     const value = Number(digits.replace(/[^\d]/g, ""));
     return Number.isFinite(value) ? value : 0;
   };
 
+  const COMMITTEE_TYPE_OPTIONS = ["উপদেষ্টা কমিটি", "আহবায়ক কমিটি", "কার্যনির্বাহী কমিটি"];
+  const COMMITTEE_TYPE_ALIASES = {
+    "Advisory Committee": "উপদেষ্টা কমিটি",
+    "Executive Committee": "আহবায়ক কমিটি"
+  };
+  const committeeTypeValue = (value) => {
+    const type = String(value || "").trim();
+    return COMMITTEE_TYPE_ALIASES[type] || type || "আহবায়ক কমিটি";
+  };
+
   const committeeYears = () =>
     [...new Set(state.data.committee.map((p) => p.year || "২০২২"))].sort((a, b) => yearScore(b) - yearScore(a));
 
   const committeeSession = (person = {}) => String(person.year || "2026-2027").trim() || "2026-2027";
-  const committeeType = (person = {}) => String(person.type || "Executive Committee").trim() || "Executive Committee";
+  const committeeType = (person = {}) => committeeTypeValue(person.type);
   const committeeStatus = (person = {}) => String(person.status || "active").toLowerCase() === "inactive" ? "inactive" : "active";
   const committeeRoleOrder = (role) => ({
     "আহবায়ক": 10,
@@ -217,6 +230,7 @@
   /* ── Footer ─────────────────────────────────────────────── */
   function footer() {
     const { settings, navigation, topLinks } = state.data;
+    const developerProfileUrl = "/committee-member/%E0%A6%87%E0%A6%9E%E0%A7%8D%E0%A6%9C%E0%A6%BF%E0%A6%83-%E0%A6%96%E0%A6%BE%E0%A6%B2%E0%A7%87%E0%A6%A6-%E0%A6%AE%E0%A6%BE%E0%A6%B8%E0%A7%81%E0%A6%A6-%E0%A6%AC%E0%A6%BE%E0%A6%AC%E0%A7%81/?id=89&ci=16";
     return `
       <footer class="site-footer">
         <div class="footer-overlay">
@@ -245,6 +259,7 @@
         </div>
         <div class="copyright">
           Copyright © ${new Date().getFullYear()} ${escapeHtml(settings.siteName)} — সর্বস্বত্ব সংরক্ষিত
+          <span class="footer-dev-credit">Developed by <a href="${escapeHtml(developerProfileUrl)}">KM Babu</a></span>
         </div>
       </footer>
     `;
@@ -303,16 +318,17 @@
       ? yearOrOptions
       : { ...maybeOptions, year: yearOrOptions };
     const year = options.year || "";
+    const requestedType = options.type ? committeeTypeValue(options.type) : "";
     const scoped = sortCommitteePeople((state.data.committee || []).filter((person) => {
       if (year && committeeSession(person) !== year) return false;
       if (options.activeOnly && committeeStatus(person) !== "active") return false;
-      if (options.type && committeeType(person) !== options.type) return false;
+      if (requestedType && committeeType(person) !== requestedType) return false;
       return true;
     }));
     const people = limit ? scoped.slice(0, limit) : scoped;
 
     if (!people.length) {
-      return `<div class="empty-state">এই বছরের কোন কমিটি পাওয়া যায়নি</div>`;
+      return `<div class="empty-state">${escapeHtml(options.emptyMessage || "এই বছরের কোন কমিটি পাওয়া যায়নি")}</div>`;
     }
 
     return `
@@ -529,7 +545,7 @@
       <section class="content-section soft-band">
         <div class="container">
           ${sectionHeading("আহবায়ক কমিটি", `${year} সালের কমিটির সদস্যদের সাথে পরিচিত হোন`, "কমিটি")}
-          ${committeeCards(8, { year, activeOnly: true, type: "Executive Committee" })}
+          ${committeeCards(8, { year, activeOnly: true, type: "আহবায়ক কমিটি" })}
           <div class="center-action"><a class="skew-button" href="/committee/">সব সদস্য দেখুন</a></div>
         </div>
       </section>
@@ -567,7 +583,7 @@
       <section class="content-section soft-band">
         <div class="container">
           ${sectionHeading("কার্যনির্বাহী কমিটি", `${year} সালের কার্যনির্বাহী কমিটির সদস্যগণ`)}
-          ${committeeCards(8, { year, activeOnly: true, type: "Executive Committee" })}
+          ${committeeCards(8, { year, activeOnly: true, type: "কার্যনির্বাহী কমিটি" })}
           <div class="center-action"><a class="skew-button" href="/committee/">সব সদস্য দেখুন</a></div>
         </div>
       </section>
@@ -595,10 +611,11 @@
     const scoped = sortCommitteePeople(hasActivePeople
       ? sessionPeople.filter((person) => committeeStatus(person) === "active")
       : sessionPeople);
-    const typeOrder = ["Executive Committee", "Advisory Committee"];
+    const typeOrder = COMMITTEE_TYPE_OPTIONS;
+    const availableTypes = [...new Set(scoped.map((person) => committeeType(person)).filter(Boolean))];
     const types = [
-      ...typeOrder.filter((type) => scoped.some((person) => committeeType(person) === type)),
-      ...[...new Set(scoped.map((person) => committeeType(person)))].filter((type) => !typeOrder.includes(type))
+      ...typeOrder.filter((type) => availableTypes.includes(type)),
+      ...availableTypes.filter((type) => !typeOrder.includes(type))
     ];
     const groupedCommittee = types.length
       ? types.map((type) => `
@@ -607,7 +624,7 @@
               <span>${escapeHtml(year)}</span>
               <h3>${escapeHtml(type)}</h3>
             </div>
-            ${committeeCards(null, { year, type, activeOnly: hasActivePeople })}
+            ${committeeCards(null, { year, type, activeOnly: hasActivePeople, emptyMessage: `এই ${type}র সদস্য এখনো যোগ করা হয়নি` })}
           </section>
         `).join("")
       : `<div class="empty-state">এই সেশনের কোনো কমিটি পাওয়া যায়নি</div>`;
@@ -712,8 +729,10 @@
               </tr>
             </thead>
             <tbody>
-              ${visible.length ? visible.map((member, i) =>
-      `<tr>
+              ${visible.length ? visible.map((member, i) => {
+        const memberIndex = (state.data.members || []).indexOf(member);
+        const profileUrl = `/member-profile/${profileSlug(member.name, "member")}/?id=${encodeURIComponent(member.id || "")}&mi=${memberIndex}`;
+        return `<tr data-member-profile-url="${escapeHtml(profileUrl)}" tabindex="0" role="link" aria-label="${escapeHtml(member.name || "Member")} profile">
                   <td data-label="#">${start + i + 1}</td>
                   <td data-label="ছবি">
                     <img class="member-data-photo" src="${escapeHtml(member.image || "/assets/forum-logo.png")}" alt="${escapeHtml(member.name || "Member")}" onerror="this.src='/assets/forum-logo.png'">
@@ -724,7 +743,8 @@
                   <td data-label="ঠিকানা">${escapeHtml(member.address || "")}</td>
                   <td data-label="ব্যাচ">${escapeHtml(member.batch || "")}</td>
                   <td data-label="ধরণ">${escapeHtml(member.type || "")}</td>
-                </tr>`
+                </tr>`;
+      }
     ).join("") : `<tr><td colspan="8"><div class="empty-state">কোন সদস্য পাওয়া যায়নি।</div></td></tr>`}
             </tbody>
           </table>
@@ -752,6 +772,69 @@
   }
 
   /* ── Posts List Page ─────────────────────────────────────── */
+  function publicMemberProfilePage() {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get("id") || "";
+    const mi = parseInt(params.get("mi") ?? "0", 10);
+    const members = state.data.members || [];
+    const member = members.find((item) => String(item.id || "") === String(id))
+      || members[mi]
+      || null;
+
+    if (!member) {
+      return `
+        ${pageHero({ title: "সদস্য পাওয়া যায়নি" })}
+        <section class="content-section">
+          <div class="container centered-copy">
+            <p>এই সদস্যের তথ্য পাওয়া যায়নি।</p>
+            <a class="skew-button" href="/alumni-members-profiles/">ফিরে যান</a>
+          </div>
+        </section>
+      `;
+    }
+
+    return `
+      ${pageHero({ title: "সদস্য প্রোফাইল" })}
+      <section class="profile-page member-public-profile-page">
+        <div class="container">
+          <div class="profile-back">
+            <a class="skew-button" href="/alumni-members-profiles/" style="font-size:13px;padding:8px 20px;">← সদস্য তালিকায় ফিরুন</a>
+          </div>
+          <div class="profile-card member-public-profile-card">
+            <div class="profile-photo-col">
+              <img src="${escapeHtml(member.image || "/assets/forum-logo.png")}"
+                   alt="${escapeHtml(member.name || "Member")}"
+                   onerror="this.src='/assets/forum-logo.png'">
+              <div class="profile-name">${escapeHtml(member.name || "Member")}</div>
+              <div class="profile-role">${escapeHtml(member.type || "সদস্য")}</div>
+              <span class="profile-year-badge">${member.batch ? `ব্যাচ ${escapeHtml(member.batch)}` : "সদস্য প্রোফাইল"}</span>
+              <div class="profile-contact">
+                ${member.email ? `<div class="profile-contact-item">ই-মেইল: ${escapeHtml(member.email)}</div>` : ""}
+                ${member.phone ? `<div class="profile-contact-item">ফোন: ${escapeHtml(member.phone)}</div>` : ""}
+                ${member.address ? `<div class="profile-contact-item">ঠিকানা: ${escapeHtml(member.address)}</div>` : ""}
+              </div>
+            </div>
+            <div class="profile-body-col">
+              <h2>${escapeHtml(member.name || "Member")}</h2>
+              ${member.type ? `<p><strong>সদস্য ধরন:</strong> ${escapeHtml(member.type)}</p>` : ""}
+              ${member.batch ? `<p><strong>ব্যাচ:</strong> ${escapeHtml(member.batch)}</p>` : ""}
+              ${member.email ? `<p><strong>ই-মেইল:</strong> ${escapeHtml(member.email)}</p>` : ""}
+              ${member.phone ? `<p><strong>ফোন:</strong> ${escapeHtml(member.phone)}</p>` : ""}
+              ${member.address ? `<p><strong>ঠিকানা:</strong> ${escapeHtml(member.address)}</p>` : ""}
+              <div class="profile-message-box">
+                <h3>ফোরাম সদস্য</h3>
+                <p>
+                  ${escapeHtml(member.name || "এই সদস্য")} প্রাক্তন শিক্ষার্থী ফোরামের একজন সম্মানিত সদস্য।
+                  সদস্য প্রোফাইল থেকে ব্যাচ, যোগাযোগ ও পরিচিতির তথ্য দেখা যাবে।
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
   function postsPage(page) {
     const posts = page.filter === "all"
       ? state.data.posts
@@ -1240,14 +1323,18 @@
     const page = state.data.pages.find((item) => normalizePath(item.path) === path);
     const post = state.data.posts.find((item) => normalizePath(item.path) === path);
 
-    // Committee member profile page (dynamic path)
+    // Committee/member profile pages (dynamic paths)
     const isProfilePage = path.startsWith("/committee-member/");
+    const isMemberProfilePage = path.startsWith("/member-profile/");
 
     let content = "";
 
     if (isProfilePage) {
       setTitle("কমিটি সদস্য পরিচিতি");
       content = committeeMemberPage();
+    } else if (isMemberProfilePage) {
+      setTitle("সদস্য প্রোফাইল");
+      content = publicMemberProfilePage();
     } else if (post) {
       setTitle(post.title);
       content = postPage(post);
@@ -1407,6 +1494,26 @@
         const url = card.dataset.profileUrl;
         history.pushState({}, "", url);
         renderPage();
+      });
+    });
+
+    app.querySelectorAll("[data-member-profile-url]").forEach((row) => {
+      const openProfile = () => {
+        const url = row.dataset.memberProfileUrl;
+        if (!url) return;
+        history.pushState({}, "", url);
+        renderPage();
+      };
+
+      row.addEventListener("click", (event) => {
+        if (event.target.closest("a, button, input, select, textarea")) return;
+        openProfile();
+      });
+
+      row.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        openProfile();
       });
     });
 
@@ -1724,7 +1831,8 @@
     }
     renderPage();
   });
-  init().catch(() => {
+  init().catch((error) => {
+    console.error("Site load failed", error);
     app.innerHTML = `<div class="loading">সাইট লোড করা যায়নি।</div>`;
   });
 })();
