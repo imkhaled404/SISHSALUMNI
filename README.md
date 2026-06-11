@@ -53,7 +53,7 @@ Admin asset uploads accept common image formats: `jpg`, `jpeg`, `png`, `gif`, `w
 
 ## Committee sessions
 
-Committee records support sessions such as `2026-2027`, committee type, active/inactive status, and designation order. Local SQLite adds these columns automatically. In Supabase, add these columns to the `committee` table before saving committee session fields:
+Committee records support sessions such as `2026-2027`, committee type, active/inactive status, and designation order. Local SQLite adds these columns automatically. The Supabase schema includes the same migration lines; run them in Supabase if the live database was created before these fields existed:
 
 ```sql
 alter table committee add column if not exists type text not null default 'Executive Committee';

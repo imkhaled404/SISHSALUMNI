@@ -54,6 +54,8 @@ const SITE_SECTION_TABLES = {
   gallery: ["gallery"]
 };
 
+const COMMITTEE_META_SOURCE = Symbol("committeeMetaSource");
+
 function isMissingTable(error) {
   return /does not exist|schema cache|relation .* not found|Could not find the table/i.test(error.message || "");
 }
@@ -91,6 +93,14 @@ function maybeNumber(value) {
 function maybeInteger(value, fallback = 0) {
   const number = Number(value);
   return Number.isInteger(number) ? number : fallback;
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null);
+}
+
+function textValue(value) {
+  return value === undefined || value === null ? "" : String(value);
 }
 
 function committeeType(value) {
@@ -174,11 +184,13 @@ function findPayloadMember(data, memberId) {
 
 function committeeFallback(person, member) {
   return {
-    name: member?.name || person.name || "Committee member",
-    email: normalizedEmail(member?.email || person.email || ""),
-    phone: member?.phone || person.phone || "",
-    image: member?.image || person.image || "/assets/forum-logo.png",
-    passingYear: person.passingYear || member?.batch || ""
+    name: firstDefined(member?.name, person.memberName, person.name) || "Committee member",
+    email: normalizedEmail(firstDefined(member?.email, person.memberEmail, person.email, "")),
+    phone: textValue(firstDefined(member?.phone, person.memberPhone, person.phone, "")),
+    address: textValue(firstDefined(member?.address, person.memberAddress, person.address, "")),
+    image: firstDefined(member?.image, person.memberImage, person.image) || "/assets/forum-logo.png",
+    memberType: textValue(firstDefined(member?.type, person.memberType, "")),
+    passingYear: textValue(firstDefined(person.passingYear, person.memberBatch, member?.batch, ""))
   };
 }
 
@@ -438,27 +450,32 @@ async function readSite(includePrivate = false) {
     topLinks,
     heroSlides,
     pages,
-    committee: committeeRows.map((r) => ({
-      id: r.id,
-      memberId: r.member_id || "",
-      name: membersById.get(String(r.member_id || ""))?.name || r.name || "",
-      email: membersById.get(String(r.member_id || ""))?.email || r.email || "",
-      role: r.role,
-      year: r.year,
-      type: committeeType(r.type || committeeMeta[String(r.id)]?.type),
-      status: committeeStatus(r.status || committeeMeta[String(r.id)]?.status),
-      designationOrder: committeeDesignationOrder({
-        designationOrder: r.designation_order ?? committeeMeta[String(r.id)]?.designationOrder,
-        sortOrder: r.sort_order
-      }, r.sort_order ?? 9999),
-      sortOrder: r.sort_order ?? 9999,
-      passingYear: r.passing_year || membersById.get(String(r.member_id || ""))?.batch || "",
-      biography: r.biography,
-      message: r.message,
-      phone: membersById.get(String(r.member_id || ""))?.phone || r.phone || "",
-      address: membersById.get(String(r.member_id || ""))?.address || "",
-      image: membersById.get(String(r.member_id || ""))?.image || r.image || "/assets/forum-logo.png"
-    })),
+    committee: committeeRows.map((r) => {
+      const meta = committeeMeta[String(r.id)] || {};
+      const memberId = firstDefined(r.member_id, meta.memberId, "");
+      const member = membersById.get(String(memberId || ""));
+      return {
+        id: r.id,
+        memberId,
+        name: member?.name || meta.name || r.name || "",
+        email: member?.email || meta.email || r.email || "",
+        role: r.role,
+        year: r.year,
+        type: committeeType(firstDefined(r.type, meta.type)),
+        status: committeeStatus(firstDefined(r.status, meta.status)),
+        designationOrder: committeeDesignationOrder({
+          designationOrder: firstDefined(r.designation_order, meta.designationOrder),
+          sortOrder: r.sort_order
+        }, r.sort_order ?? 9999),
+        sortOrder: r.sort_order ?? 9999,
+        passingYear: r.passing_year || meta.passingYear || member?.batch || "",
+        biography: r.biography,
+        message: r.message,
+        phone: member?.phone || meta.phone || r.phone || "",
+        address: member?.address || meta.address || "",
+        image: member?.image || meta.image || r.image || "/assets/forum-logo.png"
+      };
+    }),
     members,
     posts,
     gallery,
@@ -1546,6 +1563,69 @@ function payloadSectionKeys(data) {
   return Object.keys(SITE_SECTION_TABLES).filter((key) => Object.prototype.hasOwnProperty.call(data || {}, key));
 }
 
+function memberProfileFromCommitteePerson(person = {}, member = null) {
+  const values = {
+    name: firstDefined(person.memberName, person.name, member?.name),
+    email: firstDefined(person.memberEmail, person.email, member?.email),
+    phone: firstDefined(person.memberPhone, person.phone, member?.phone),
+    address: firstDefined(person.memberAddress, person.address, member?.address),
+    batch: firstDefined(person.memberBatch, person.batch, person.passingYear, member?.batch),
+    type: firstDefined(person.memberType, member?.type),
+    image: firstDefined(person.memberImage, person.image, member?.image)
+  };
+  const profile = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined || value === null) continue;
+    profile[key] = key === "email" ? normalizedEmail(value) : textValue(value);
+  }
+  return profile;
+}
+
+async function saveCommitteeLinkedMembers(committee = [], data = {}) {
+  for (const person of committee) {
+    const memberId = maybeNumber(person.memberId);
+    if (!memberId) continue;
+    const member = findPayloadMember(data, memberId);
+    const profile = memberProfileFromCommitteePerson(person, member);
+    if (Object.keys(profile).length) {
+      await updateMemberProfile(memberId, profile);
+    }
+  }
+}
+
+function committeeRowFromPerson(person = {}, sortOrder = 0, data = {}) {
+  const member = findPayloadMember(data, person.memberId);
+  const profile = memberProfileFromCommitteePerson(person, member);
+  const fallback = committeeFallback(person, { ...(member || {}), ...profile });
+  const row = {
+    id: maybeNumber(person.id),
+    member_id: maybeNumber(person.memberId),
+    role: person.role || "Member",
+    year: person.year || "",
+    type: committeeType(person.type),
+    status: committeeStatus(person.status),
+    designation_order: committeeDesignationOrder(person, sortOrder),
+    passing_year: fallback.passingYear || "",
+    biography: person.biography || "",
+    message: person.message || "",
+    sort_order: maybeInteger(person.sortOrder, sortOrder)
+  };
+  row[COMMITTEE_META_SOURCE] = {
+    memberId: row.member_id,
+    name: fallback.name,
+    email: fallback.email,
+    phone: fallback.phone,
+    address: fallback.address,
+    image: fallback.image,
+    memberType: fallback.memberType,
+    passingYear: row.passing_year,
+    type: row.type,
+    status: row.status,
+    designationOrder: row.designation_order
+  };
+  return row;
+}
+
 async function clearSiteSections(keys) {
   const tables = [...new Set(keys.flatMap((key) => SITE_SECTION_TABLES[key] || []))];
   for (const table of tables) {
@@ -1679,11 +1759,33 @@ async function saveSupabaseRows(table, rows, action = `save ${table}`) {
 function committeeMetaFromRows(rows = []) {
   return Object.fromEntries(rows
     .filter((row) => row.id)
-    .map((row) => [String(row.id), {
-      type: committeeType(row.type),
-      status: committeeStatus(row.status),
-      designationOrder: committeeDesignationOrder(row)
-    }]));
+    .map((row) => {
+      const source = row[COMMITTEE_META_SOURCE] || {};
+      const meta = {
+        type: committeeType(firstDefined(row.type, source.type)),
+        status: committeeStatus(firstDefined(row.status, source.status)),
+        designationOrder: committeeDesignationOrder({
+          designationOrder: firstDefined(row.designation_order, source.designationOrder),
+          sortOrder: row.sort_order
+        })
+      };
+      const memberId = maybeNumber(firstDefined(row.member_id, source.memberId));
+      if (memberId) meta.memberId = memberId;
+      for (const [key, value] of Object.entries({
+        name: firstDefined(source.name, row.name),
+        email: firstDefined(source.email, row.email),
+        phone: firstDefined(source.phone, row.phone),
+        address: firstDefined(source.address, row.address),
+        image: firstDefined(source.image, row.image),
+        memberType: source.memberType,
+        passingYear: firstDefined(source.passingYear, row.passing_year)
+      })) {
+        if (value !== undefined && value !== null) {
+          meta[key] = key === "email" ? normalizedEmail(value) : textValue(value);
+        }
+      }
+      return [String(row.id), meta];
+    }));
 }
 
 function stripCommitteeSchemaFields(row) {
@@ -1802,20 +1904,9 @@ async function saveSiteSections(data, keys = payloadSectionKeys(data)) {
     }
 
     if (sectionKeys.includes("committee")) {
+      await saveCommitteeLinkedMembers(data.committee || [], data);
       let sort = 0;
-      await saveSupabaseCommitteeRows((data.committee || []).map((person) => ({
-        id: maybeNumber(person.id),
-        member_id: maybeNumber(person.memberId),
-        role: person.role || "Member",
-        year: person.year || "",
-        type: committeeType(person.type),
-        status: committeeStatus(person.status),
-        designation_order: committeeDesignationOrder(person, sort),
-        passing_year: person.passingYear || "",
-        biography: person.biography || "",
-        message: person.message || "",
-        sort_order: maybeInteger(person.sortOrder, sort++)
-      })));
+      await saveSupabaseCommitteeRows((data.committee || []).map((person) => committeeRowFromPerson(person, sort++, data)));
     }
 
     if (sectionKeys.includes("members")) {
@@ -1918,23 +2009,24 @@ async function saveSiteSections(data, keys = payloadSectionKeys(data)) {
     }
 
     if (sectionKeys.includes("committee")) {
+      await saveCommitteeLinkedMembers(data.committee || [], data);
       let sort = 0;
       for (const person of data.committee || []) {
-        const sortOrder = maybeInteger(person.sortOrder, sort++);
+        const row = committeeRowFromPerson(person, sort++, data);
         await querySQLite(
           "INSERT INTO committee (id, member_id, role, year, type, status, designation_order, passing_year, biography, message, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           [
-            maybeNumber(person.id) || null,
-            maybeNumber(person.memberId) || null,
-            person.role || "Member",
-            person.year || "",
-            committeeType(person.type),
-            committeeStatus(person.status),
-            committeeDesignationOrder(person, sortOrder),
-            person.passingYear || "",
-            person.biography || "",
-            person.message || "",
-            sortOrder
+            row.id || null,
+            row.member_id || null,
+            row.role,
+            row.year,
+            row.type,
+            row.status,
+            row.designation_order,
+            row.passing_year,
+            row.biography,
+            row.message,
+            row.sort_order
           ]
         );
       }
@@ -2041,26 +2133,6 @@ async function replaceSite(data) {
     }
 
     sort = 0;
-    await saveSupabaseCommitteeRows((data.committee || []).map((person) => {
-      const member = findPayloadMember(data, person.memberId);
-      const fallback = committeeFallback(person, member);
-      const sortOrder = maybeInteger(person.sortOrder, sort++);
-      return {
-        id: maybeNumber(person.id),
-        member_id: maybeNumber(person.memberId),
-        role: person.role || "Member",
-        year: person.year || "",
-        type: committeeType(person.type),
-        status: committeeStatus(person.status),
-        designation_order: committeeDesignationOrder(person, sortOrder),
-        passing_year: fallback.passingYear || "",
-        biography: person.biography || "",
-        message: person.message || "",
-        sort_order: sortOrder
-      };
-    }));
-
-    sort = 0;
     for (const member of data.members || []) {
       await insertSupabase("members", {
         id: maybeNumber(member.id),
@@ -2074,6 +2146,10 @@ async function replaceSite(data) {
         sort_order: sort++
       });
     }
+
+    await saveCommitteeLinkedMembers(data.committee || [], data);
+    sort = 0;
+    await saveSupabaseCommitteeRows((data.committee || []).map((person) => committeeRowFromPerson(person, sort++, data)));
 
     sort = 0;
     for (const post of data.posts || []) {
@@ -2167,29 +2243,6 @@ async function replaceSiteSQLite(data) {
   }
 
   sort = 0;
-  for (const person of data.committee || []) {
-    const member = findPayloadMember(data, person.memberId);
-    const fallback = committeeFallback(person, member);
-    const sortOrder = maybeInteger(person.sortOrder, sort++);
-    await querySQLite(
-      "INSERT INTO committee (id, member_id, role, year, type, status, designation_order, passing_year, biography, message, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [
-        maybeNumber(person.id) || null,
-        maybeNumber(person.memberId) || null,
-        person.role || "Member",
-        person.year || "",
-        committeeType(person.type),
-        committeeStatus(person.status),
-        committeeDesignationOrder(person, sortOrder),
-        fallback.passingYear || "",
-        person.biography || "",
-        person.message || "",
-        sortOrder
-      ]
-    );
-  }
-
-  sort = 0;
   for (const member of data.members || []) {
     await querySQLite(
       "INSERT INTO members (id, name, email, phone, address, batch, type, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2203,6 +2256,28 @@ async function replaceSiteSQLite(data) {
         member.type || "",
         member.image || "",
         sort++
+      ]
+    );
+  }
+
+  await saveCommitteeLinkedMembers(data.committee || [], data);
+  sort = 0;
+  for (const person of data.committee || []) {
+    const row = committeeRowFromPerson(person, sort++, data);
+    await querySQLite(
+      "INSERT INTO committee (id, member_id, role, year, type, status, designation_order, passing_year, biography, message, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        row.id || null,
+        row.member_id || null,
+        row.role,
+        row.year,
+        row.type,
+        row.status,
+        row.designation_order,
+        row.passing_year,
+        row.biography,
+        row.message,
+        row.sort_order
       ]
     );
   }

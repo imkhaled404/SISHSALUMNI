@@ -396,6 +396,19 @@
     `;
   }
 
+  function committeeMemberProfileFields(member, person = {}) {
+    if (!member) return "";
+    return `
+      ${field("Member name", "memberName", person.memberName ?? member.name ?? person.name ?? "")}
+      ${field("Member email", "memberEmail", person.memberEmail ?? member.email ?? person.email ?? "", "email")}
+      ${field("Member phone", "memberPhone", person.memberPhone ?? member.phone ?? person.phone ?? "")}
+      ${field("Member address", "memberAddress", person.memberAddress ?? member.address ?? person.address ?? "", "text", { wide: true })}
+      ${field("Member batch", "memberBatch", person.memberBatch ?? member.batch ?? person.passingYear ?? "")}
+      ${field("Member type", "memberType", person.memberType ?? member.type ?? "")}
+      ${field("Member image path", "memberImage", person.memberImage ?? member.image ?? person.image ?? "")}
+    `;
+  }
+
   async function uploadImage(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -948,6 +961,7 @@
           ${selectField("Committee type", "type", person.type, optionsWithCurrent(COMMITTEE_TYPE_OPTIONS, person.type))}
           ${memberPicker(person)}
           ${committeeMemberSummary(member, person)}
+          ${committeeMemberProfileFields(member, person)}
           ${selectField("Role / designation", "role", person.role, optionsWithCurrent(COMMITTEE_ROLE_OPTIONS, person.role))}
           ${field("Designation order", "designationOrder", person.designationOrder, "number")}
           ${field("Display order", "sortOrder", person.sortOrder, "number")}
@@ -1326,6 +1340,26 @@
     }
     if (editor === "committee") {
       const member = memberById(values.memberId);
+      const memberIndex = (state.data.members || []).findIndex((item) => String(item.id || "") === String(values.memberId || ""));
+      const memberPatch = {};
+      const memberFields = {
+        memberName: "name",
+        memberEmail: "email",
+        memberPhone: "phone",
+        memberAddress: "address",
+        memberBatch: "batch",
+        memberType: "type",
+        memberImage: "image"
+      };
+      for (const [formKey, memberKey] of Object.entries(memberFields)) {
+        if (Object.prototype.hasOwnProperty.call(values, formKey)) {
+          memberPatch[memberKey] = values[formKey];
+        }
+      }
+      const nextMember = member ? { ...member, ...memberPatch } : null;
+      if (nextMember && memberIndex >= 0 && Object.keys(memberPatch).length) {
+        state.data.members[memberIndex] = nextMember;
+      }
       if (!hasSavedId(current)) {
         next.id = "";
       }
@@ -1337,8 +1371,13 @@
         ? Number(values.designationOrder)
         : committeeRoleOrder(values.role);
       next.sortOrder = Number.isFinite(Number(values.sortOrder)) ? Number(values.sortOrder) : index;
-      if (member) {
-        next.passingYear = values.passingYear || member.batch || "";
+      if (nextMember) {
+        next.name = nextMember.name || "";
+        next.email = nextMember.email || "";
+        next.phone = nextMember.phone || "";
+        next.address = nextMember.address || "";
+        next.image = nextMember.image || "";
+        next.passingYear = values.passingYear || nextMember.batch || "";
       }
     }
     state.data[editor][index] = next;
