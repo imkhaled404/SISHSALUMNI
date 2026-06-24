@@ -33,6 +33,11 @@ const {
   toggleForumLike,
   hashPassword,
   fromJson,
+  createMemberPayment,
+  updateMemberPayment,
+  getPaymentByBkashPaymentId,
+  addImage,
+  getImages,
   init
 } = require("./db");
 
@@ -78,6 +83,42 @@ const githubUploadPublicBaseUrl = process.env.GITHUB_UPLOAD_PUBLIC_BASE_URL || "
 const forcePersistentUploads = ["true", "1", "yes"].includes(String(process.env.REQUIRE_PERSISTENT_UPLOADS || "").toLowerCase());
 const runningOnRender = !!(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL);
 const mirrorUploadsToLocal = ["true", "1", "yes"].includes(String(process.env.MIRROR_UPLOADS_TO_LOCAL || "").toLowerCase());
+
+// bKash Live Credentials
+const bkashAppKey = process.env.BKASH_APP_KEY || "";
+const bkashAppSecret = process.env.BKASH_APP_SECRET || "";
+const bkashUsername = process.env.BKASH_USERNAME || "";
+const bkashPassword = process.env.BKASH_PASSWORD || "";
+const bkashBaseUrl = process.env.BKASH_BASE_URL || "https://checkout.sandbox.bka.sh/v2.0.0-beta/checkout";
+const isBkashLive = !!(bkashAppKey && bkashAppSecret && bkashUsername && bkashPassword);
+
+let bkashToken = "";
+let bkashTokenExpiry = 0;
+
+async function getBkashToken() {
+  if (bkashToken && Date.now() < bkashTokenExpiry) return bkashToken;
+  try {
+    const response = await fetch(`${bkashBaseUrl}/token/grant`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        username: bkashUsername,
+        password: bkashPassword
+      },
+      body: JSON.stringify({ app_key: bkashAppKey, app_secret: bkashAppSecret })
+    });
+    const result = await response.json();
+    if (result.id_token) {
+      bkashToken = result.id_token;
+      bkashTokenExpiry = Date.now() + 3500 * 1000; // bKash tokens usually last 1 hour (3600s)
+      return bkashToken;
+    }
+    throw new Error(result.errorMessage || "bKash Token Grant Failed");
+  } catch (error) {
+    console.error("bKash Token Error:", error);
+    throw error;
+  }
+}
 const sessions = new Map();
 const commonImageExts = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".avif", ".bmp", ".ico", ".tif", ".tiff", ".heic", ".heif"];
 const assetUploadExts = new Set(commonImageExts);
@@ -471,7 +512,24 @@ async function saveAssetImage({ filename, base64, subdir = "", maxBytes = 6 * 10
   const { filePath, publicPath } = await getAvailableAssetName(String(filename || "image.png"), subdir);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, buffer);
-  return supabaseUploaded || githubUploaded || { ok: true, path: publicPath, storage: "local" };
+
+  const finalResult = supabaseUploaded || githubUploaded || { ok: true, path: publicPath, storage: "local" };
+
+  // Record image upload in database catalog
+  if (finalResult.ok) {
+    try {
+      await addImage({
+        type: subdir || "general",
+        filename: path.basename(finalResult.path),
+        url: finalResult.path,
+        storage: finalResult.storage || "local"
+      });
+    } catch (e) {
+      console.warn("Failed to catalog image:", e.message);
+    }
+  }
+
+  return finalResult;
 }
 
 function normalizeStaticPath(urlPath) {
@@ -613,7 +671,7 @@ async function sendSmtpMail({ to, subject, text }) {
     ].join("\r\n");
     socket.write(`${body}\r\n`);
     await smtpCommand(socket, "", 250);
-    await smtpCommand(socket, "QUIT", 221).catch(() => {});
+    await smtpCommand(socket, "QUIT", 221).catch(() => { });
     return { sent: true };
   } finally {
     socket.destroy();
@@ -1050,6 +1108,174 @@ async function handleApi(req, res, url) {
       maxBytes: 6 * 1024 * 1024
     });
     sendJson(res, uploaded.error ? 400 : 200, uploaded);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/bkash/createPayment") {
+    const session = getSession(req);
+    const body = await readBody(req);
+    const isApplication = body.isApplication === true;
+
+    if (!session && !isApplication) {
+      sendJson(res, 401, { error: "Login required" });
+      return;
+    }
+
+    const { feeType, amount, memberId, memberName, memberEmail, memberPhone } = body;
+
+    const payment = await createMemberPayment({
+      memberId: session ? session.user.member_id : (memberId || null),
+      memberName: session ? (session.user.member?.name || session.user.email) : (memberName || "Guest"),
+      memberEmail: session ? session.user.email : (memberEmail || ""),
+      memberPhone: session ? (session.user.member?.phone || "") : (memberPhone || ""),
+      feeType: feeType || "application_fee",
+      amount: String(amount || body.amount || "0"),
+      method: "bkash",
+      status: "pending",
+      bkashPaymentId: "TRX" + Date.now() + Math.floor(Math.random() * 1000)
+    });
+    if (payment.error) {
+      sendJson(res, 400, payment);
+      return;
+    }
+
+    if (isBkashLive) {
+      try {
+        const token = await getBkashToken();
+        const createRes = await fetch(`${bkashBaseUrl}/create`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: token,
+            "X-APP-Key": bkashAppKey
+          },
+          body: JSON.stringify({
+            mode: "0011",
+            payerReference: memberPhone || "01XXXXXXXXX",
+            callbackURL: `http://${req.headers.host}/api/bkash/callback`,
+            amount: payment.payment.amount,
+            currency: "BDT",
+            intent: "sale",
+            merchantInvoiceNumber: "INV" + payment.payment.id
+          })
+        });
+        const liveResult = await createRes.json();
+        if (liveResult.bkashURL) {
+          await updateMemberPayment(payment.payment.id, { bkashPaymentId: liveResult.paymentID });
+          sendJson(res, 200, { paymentID: liveResult.paymentID, bkashURL: liveResult.bkashURL });
+          return;
+        }
+        throw new Error(liveResult.errorMessage || "Live bKash Payment Initiation Failed");
+      } catch (error) {
+        console.error("bKash Create Error:", error);
+        // Fallback to mock if live fails or continue with error
+        sendJson(res, 500, { error: error.message });
+        return;
+      }
+    }
+
+    sendJson(res, 200, {
+      paymentID: payment.payment.bkash_payment_id,
+      bkashURL: `/bkash-mock?paymentID=${payment.payment.bkash_payment_id}`
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/bkash/executePayment") {
+    const body = await readBody(req);
+    const paymentId = body.paymentID;
+    if (!paymentId) {
+      sendJson(res, 400, { error: "Missing paymentID" });
+      return;
+    }
+    const paymentResult = await getPaymentByBkashPaymentId(paymentId);
+    if (!paymentResult || !paymentResult.payment || !paymentResult.payment.id) {
+      sendJson(res, 404, { error: "Payment not found" });
+      return;
+    }
+
+    let trxID = "BKASH" + Date.now().toString(36).toUpperCase();
+
+    if (isBkashLive) {
+      try {
+        const token = await getBkashToken();
+        const execRes = await fetch(`${bkashBaseUrl}/execute`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: token,
+            "X-APP-Key": bkashAppKey
+          },
+          body: JSON.stringify({ paymentID: paymentId })
+        });
+        const execResult = await execRes.json();
+        if (execResult.transactionStatus === "Completed") {
+          trxID = execResult.trxID;
+        } else {
+          throw new Error(execResult.errorMessage || "Payment execution failed");
+        }
+      } catch (error) {
+        sendJson(res, 500, { error: error.message });
+        return;
+      }
+    }
+
+    await updateMemberPayment(paymentResult.payment.id, {
+      status: "completed",
+      bkashTrxId: trxID
+    });
+    sendJson(res, 200, {
+      paymentID: paymentId,
+      status: "Completed",
+      trxID,
+      feeType: paymentResult.payment.fee_type
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/bkash/callback") {
+    const paymentID = url.searchParams.get("paymentID");
+    const status = url.searchParams.get("status");
+
+    if (status === "success") {
+      // Execute the payment
+      try {
+        const token = await getBkashToken();
+        const execRes = await fetch(`${bkashBaseUrl}/execute`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: token,
+            "X-APP-Key": bkashAppKey
+          },
+          body: JSON.stringify({ paymentID })
+        });
+        const execResult = await execRes.json();
+
+        const paymentResult = await getPaymentByBkashPaymentId(paymentID);
+        const trxID = execResult.trxID || ("BKASH" + Date.now().toString(36).toUpperCase());
+
+        if (paymentResult?.payment) {
+          await updateMemberPayment(paymentResult.payment.id, {
+            status: "completed",
+            bkashTrxId: trxID
+          });
+
+          if (paymentResult.payment.fee_type === "application_fee") {
+            res.writeHead(302, { Location: `/member-form?trxID=${trxID}` });
+          } else {
+            res.writeHead(302, { Location: "/account/?paid=true" });
+          }
+          res.end();
+          return;
+        }
+      } catch (error) {
+        console.error("Callback Execute Error:", error);
+      }
+    }
+
+    res.writeHead(302, { Location: "/account/?error=payment_failed" });
+    res.end();
     return;
   }
 

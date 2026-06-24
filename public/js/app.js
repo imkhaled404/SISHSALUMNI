@@ -11,8 +11,8 @@
     } catch {
       return {
         getItem: () => null,
-        setItem: () => {},
-        removeItem: () => {}
+        setItem: () => { },
+        removeItem: () => { }
       };
     }
   })();
@@ -399,6 +399,8 @@
               <span class="profile-year-badge">${escapeHtml(committeeType(person))} ${escapeHtml(committeeSession(person))}</span>
               <div class="profile-contact">
                 ${person.passingYear ? `<div class="profile-contact-item">🎓 ব্যাচ: ${escapeHtml(person.passingYear)}</div>` : ""}
+                ${(person.memberBloodGroup || person.bloodGroup) ? `<div class="profile-contact-item">🩸 রক্তের গ্রুপ: ${escapeHtml(person.memberBloodGroup || person.bloodGroup)}</div>` : ""}
+                ${(person.memberCurrentWorkplace || person.currentWorkplace) ? `<div class="profile-contact-item">💼 কর্মস্থল: ${escapeHtml(person.memberCurrentWorkplace || person.currentWorkplace)}</div>` : ""}
                 ${person.phone ? `<div class="profile-contact-item">📞 ${escapeHtml(person.phone)}</div>` : ""}
                 ${person.email ? `<div class="profile-contact-item">📧 ${escapeHtml(person.email)}</div>` : ""}
                 ${person.address ? `<div class="profile-contact-item">📍 ${escapeHtml(person.address)}</div>` : ""}
@@ -410,6 +412,8 @@
               <p><strong>কমিটি:</strong> ${escapeHtml(committeeType(person))}</p>
               <p><strong>সেশন:</strong> ${escapeHtml(committeeSession(person))}</p>
               ${person.passingYear ? `<p><strong>ব্যাচ:</strong> ${escapeHtml(person.passingYear)}</p>` : ""}
+              ${(person.memberBloodGroup || person.bloodGroup) ? `<p><strong>রক্তের গ্রুপ:</strong> ${escapeHtml(person.memberBloodGroup || person.bloodGroup)}</p>` : ""}
+              ${(person.memberCurrentWorkplace || person.currentWorkplace) ? `<p><strong>কর্মস্থল:</strong> ${escapeHtml(person.memberCurrentWorkplace || person.currentWorkplace)}</p>` : ""}
               ${person.phone ? `<p><strong>ফোন:</strong> ${escapeHtml(person.phone)}</p>` : ""}
               ${person.bio ? `<p>${escapeHtml(person.bio)}</p>` : `
                 <p>
@@ -724,15 +728,17 @@
                 <th>ই-মেইল</th>
                 <th>ফোন</th>
                 <th>ঠিকানা</th>
+                <th>রক্তের গ্রুপ</th>
+                <th>কর্মস্থল</th>
                 <th>ব্যাচ</th>
                 <th>ধরণ</th>
               </tr>
             </thead>
             <tbody>
               ${visible.length ? visible.map((member, i) => {
-        const memberIndex = (state.data.members || []).indexOf(member);
-        const profileUrl = `/member-profile/${profileSlug(member.name, "member")}/?id=${encodeURIComponent(member.id || "")}&mi=${memberIndex}`;
-        return `<tr data-member-profile-url="${escapeHtml(profileUrl)}" tabindex="0" role="link" aria-label="${escapeHtml(member.name || "Member")} profile">
+      const memberIndex = (state.data.members || []).indexOf(member);
+      const profileUrl = `/member-profile/${profileSlug(member.name, "member")}/?id=${encodeURIComponent(member.id || "")}&mi=${memberIndex}`;
+      return `<tr data-member-profile-url="${escapeHtml(profileUrl)}" tabindex="0" role="link" aria-label="${escapeHtml(member.name || "Member")} profile">
                   <td data-label="#">${start + i + 1}</td>
                   <td data-label="ছবি">
                     <img class="member-data-photo" src="${escapeHtml(member.image || "/assets/forum-logo.png")}" alt="${escapeHtml(member.name || "Member")}" onerror="this.src='/assets/forum-logo.png'">
@@ -741,11 +747,13 @@
                   <td data-label="ই-মেইল">${escapeHtml(member.email || "")}</td>
                   <td data-label="ফোন">${escapeHtml(member.phone || "")}</td>
                   <td data-label="ঠিকানা">${escapeHtml(member.address || "")}</td>
+                  <td data-label="রক্তের গ্রুপ">${escapeHtml(member.bloodGroup || "")}</td>
+                  <td data-label="কর্মস্থল">${escapeHtml(member.currentWorkplace || "")}</td>
                   <td data-label="ব্যাচ">${escapeHtml(member.batch || "")}</td>
                   <td data-label="ধরণ">${escapeHtml(member.type || "")}</td>
                 </tr>`;
-      }
-    ).join("") : `<tr><td colspan="8"><div class="empty-state">কোন সদস্য পাওয়া যায়নি।</div></td></tr>`}
+    }
+    ).join("") : `<tr><td colspan="10"><div class="empty-state">কোন সদস্য পাওয়া যায়নি।</div></td></tr>`}
             </tbody>
           </table>
         </div>
@@ -1124,7 +1132,9 @@
       ["passingYear", "এস.এস.সি / এইচ.এস.সি পাশের বছর"],
       ["leavingYear", "বিদ্যালয় ত্যাগের বছর"],
       ["education", "শিক্ষাগত যোগ্যতা"],
-      ["profession", "পেশা"]
+      ["profession", "পেশা"],
+      ["bloodGroup", "রক্তের গ্রুপ (Blood Group)"],
+      ["currentWorkplace", "বর্তমান কর্মস্থল (Workplace)"]
     ];
     return `
       ${pageHero(page)}
@@ -1138,7 +1148,9 @@
             <p class="form-intro">${escapeHtml(page.body[0])}</p>
             <div class="form-grid">
               ${fields.map(([name, label]) =>
-      `<label>${escapeHtml(label)}<input name="${name}" type="text"></label>`
+      name === "bloodGroup"
+        ? `<label>${escapeHtml(label)}<select name="${name}"><option value="">-- নির্বাচন করুন --</option><option value="A+">A+</option><option value="A-">A-</option><option value="B+">B+</option><option value="B-">B-</option><option value="O+">O+</option><option value="O-">O-</option><option value="AB+">AB+</option><option value="AB-">AB-</option></select></label>`
+        : `<label>${escapeHtml(label)}<input name="${name}" type="text"></label>`
     ).join("")}
               <label>সদস্যের ধরণ
                 <select name="memberType">
@@ -1237,6 +1249,8 @@
                 ${(member.email || user?.email) ? `<div class="profile-contact-item">ই-মেইল: ${escapeHtml(member.email || user?.email || "")}</div>` : ""}
                 ${(member.phone || user?.phone) ? `<div class="profile-contact-item">ফোন: ${escapeHtml(member.phone || user?.phone || "")}</div>` : ""}
                 ${member.address ? `<div class="profile-contact-item">ঠিকানা: ${escapeHtml(member.address)}</div>` : ""}
+                ${member.bloodGroup ? `<div class="profile-contact-item">রক্তের গ্রুপ: ${escapeHtml(member.bloodGroup)}</div>` : ""}
+                ${member.currentWorkplace ? `<div class="profile-contact-item">কর্মস্থল: ${escapeHtml(member.currentWorkplace)}</div>` : ""}
               </div>
               <div class="member-profile-actions">
                 <a class="plain-button primary" href="/forum/">ফোরামে যান</a>
@@ -1249,6 +1263,8 @@
               ${(member.email || user?.email) ? `<p><strong>ই-মেইল:</strong> ${escapeHtml(member.email || user?.email || "")}</p>` : ""}
               ${(member.phone || user?.phone) ? `<p><strong>ফোন:</strong> ${escapeHtml(member.phone || user?.phone || "")}</p>` : ""}
               ${member.batch ? `<p><strong>ব্যাচ:</strong> ${escapeHtml(member.batch)}</p>` : ""}
+              ${member.bloodGroup ? `<p><strong>রক্তের গ্রুপ:</strong> ${escapeHtml(member.bloodGroup)}</p>` : ""}
+              ${member.currentWorkplace ? `<p><strong>কর্মস্থল:</strong> ${escapeHtml(member.currentWorkplace)}</p>` : ""}
               ${member.type ? `<p><strong>সদস্য ধরন:</strong> ${escapeHtml(member.type)}</p>` : ""}
               <div class="profile-message-box member-edit-box">
                 <h3>তথ্য আপডেট করুন</h3>
@@ -1258,6 +1274,8 @@
                     <label>ই-মেইল<input name="email" type="email" value="${escapeHtml(member.email || user?.email || "")}" required></label>
                     <label>ফোন<input name="phone" type="text" value="${escapeHtml(member.phone || user?.phone || "")}"></label>
                     <label>ব্যাচ<input name="batch" type="text" value="${escapeHtml(member.batch || "")}"></label>
+                    <label>রক্তের গ্রুপ<select name="bloodGroup"><option value="">-- নির্বাচন করুন --</option>${["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"].map(g => `<option value="${g}"${member.bloodGroup === g ? " selected" : ""}>${g}</option>`).join("")}</select></label>
+                    <label>কর্মস্থল<input name="currentWorkplace" type="text" value="${escapeHtml(member.currentWorkplace || "")}"></label>
                     <label>ধরণ<input name="type" type="text" value="${escapeHtml(member.type || "")}"></label>
                     <label>ছবি পথ<input name="image" type="text" value="${escapeHtml(member.image || "")}" placeholder="/assets/members/name.jpg"></label>
                     <label class="wide-field member-photo-field profile-upload-field">প্রোফাইল ছবি আপলোড
@@ -1273,6 +1291,15 @@
                   </div>
                   <p class="form-status" aria-live="polite"></p>
                 </form>
+              </div>
+              <div class="profile-message-box">
+                <h3>Fees & Payments (bKash)</h3>
+                <p>Manage your association fees via bKash. This is currently running in simulation mode.</p>
+                <div class="account-actions" style="margin-top: 1rem;">
+                  <button class="skew-button" data-bkash-pay="monthly_fee" data-amount="100" type="button">Pay Monthly (100 BDT)</button>
+                  <button class="plain-button primary" data-bkash-pay="yearly_fee" data-amount="1200" type="button">Pay Yearly (1200 BDT)</button>
+                </div>
+                <p class="form-status" id="bkashPaymentStatus" aria-live="polite" style="margin-top: 0.5rem; color: var(--primary);"></p>
               </div>
               <div class="profile-message-box">
                 <h3>সদস্য এলাকা</h3>
@@ -1303,6 +1330,26 @@
     `;
   }
 
+  /* ── bKash Mock Page ─────────────────────────────────────── */
+  function bkashMockPage() {
+    const params = new URLSearchParams(window.location.search);
+    const paymentID = params.get("paymentID") || "";
+    return `
+      <section class="content-section" style="background:#e2136e; color:white; min-height:80vh; display:flex; align-items:center; justify-content:center;">
+        <div class="container" style="max-width:400px; background:white; color:black; padding:2rem; border-radius:8px; text-align:center; box-shadow:0 10px 30px rgba(0,0,0,0.2);">
+          <h2 style="color:#e2136e; font-size:24px; margin-bottom:1rem;">bKash Checkout</h2>
+          <p>Payment ID: <strong>${escapeHtml(paymentID)}</strong></p>
+          <div style="margin:2rem 0;">
+            <p>This is a simulated bKash gateway. In production, this redirects to the real bKash PGW.</p>
+          </div>
+          <button class="skew-button" id="confirmBkashMock" data-payment-id="${escapeHtml(paymentID)}" type="button" style="background:#e2136e; color:white; width:100%; font-size:16px;">Confirm Payment (Simulation)</button>
+          <button class="plain-button" type="button" onclick="history.back()" style="margin-top:1rem; width:100%;">Cancel</button>
+          <p id="bkashMockStatus" aria-live="polite" style="margin-top:1rem; color:#e2136e;"></p>
+        </div>
+      </section>
+    `;
+  }
+
   /* ── Not Found Page ──────────────────────────────────────── */
   function notFoundPage() {
     return `
@@ -1326,6 +1373,7 @@
     // Committee/member profile pages (dynamic paths)
     const isProfilePage = path.startsWith("/committee-member/");
     const isMemberProfilePage = path.startsWith("/member-profile/");
+    const isBkashMock = path.startsWith("/bkash-mock");
 
     let content = "";
 
@@ -1335,6 +1383,9 @@
     } else if (isMemberProfilePage) {
       setTitle("সদস্য প্রোফাইল");
       content = publicMemberProfilePage();
+    } else if (isBkashMock) {
+      setTitle("bKash Checkout");
+      content = bkashMockPage();
     } else if (post) {
       setTitle(post.title);
       content = postPage(post);
@@ -1353,7 +1404,28 @@
       if (page.render === "forum") content = forumPage(page);
       if (page.render === "download") content = downloadPage(page);
       if (page.render === "gallery") content = galleryPage(page);
-      if (page.render === "memberForm") content = memberFormPage(page);
+      if (page.render === "memberForm") {
+        content = memberFormPage(page);
+        const params = new URLSearchParams(window.location.search);
+        const trxID = params.get("trxID");
+        if (trxID) {
+          const saved = loadRegState();
+          if (saved) {
+            setTimeout(() => {
+              const form = app.querySelector("form[data-form='application']");
+              if (form) {
+                Object.entries(saved).forEach(([k, v]) => {
+                  const input = form.elements[k];
+                  if (input) input.value = v;
+                });
+                if (form.elements["transactionId"]) form.elements["transactionId"].value = trxID;
+                if (form.elements["paymentMethod"]) form.elements["paymentMethod"].value = "bKash";
+                form.querySelector(".form-status").textContent = "বিকাশ পেমেন্ট সফল হয়েছে। আপনার বাকি তথ্য যাচাই করে ফর্মটি জমা দিন।";
+              }
+            }, 100);
+          }
+        }
+      }
       if (page.render === "contact") content = contactPage(page);
       if (page.render === "restricted") content = restrictedPage(page);
       if (page.render === "account") content = accountPage(page);
@@ -1394,6 +1466,23 @@
     return payload;
   }
 
+  function saveRegState(form) {
+    const data = {};
+    const formData = new FormData(form);
+    for (const [key, value] of formData.entries()) {
+      if (!(value instanceof File)) data[key] = value;
+    }
+    try { localStorage.setItem("alumniRegState", JSON.stringify(data)); } catch (e) { }
+  }
+
+  function loadRegState() {
+    try { return JSON.parse(localStorage.getItem("alumniRegState") || "null"); } catch (e) { return null; }
+  }
+
+  function clearRegState() {
+    try { localStorage.removeItem("alumniRegState"); } catch (e) { }
+  }
+
   async function submitJson(url, form) {
     const status = form.querySelector(".form-status");
     const payload = await formPayload(form);
@@ -1432,7 +1521,7 @@
       return;
     }
     if (normalizePath(window.location.pathname) === "/forum/") {
-      await refreshForum().catch(() => {});
+      await refreshForum().catch(() => { });
     }
     renderPage({ preserveScroll: true });
   }
@@ -1611,10 +1700,38 @@
 
     // Forms
     app.querySelectorAll("form[data-form='application']").forEach((form) => {
+      const paymentSel = form.querySelector("[name='paymentMethod']");
+      if (paymentSel) {
+        paymentSel.addEventListener("change", async () => {
+          if (paymentSel.value === "bKash" && !form.elements["transactionId"].value) {
+            const amountInput = form.querySelector("[name='amount']");
+            const rawAmount = amountInput?.value.trim();
+            const amount = (rawAmount && !isNaN(Number(rawAmount)) && Number(rawAmount) > 0) ? rawAmount : "100";
+            saveRegState(form);
+            form.querySelector(".form-status").textContent = "বিকাশ গেটওয়েতে পাঠানো হচ্ছে...";
+            try {
+              const result = await api("/api/bkash/createPayment", {
+                method: "POST",
+                body: JSON.stringify({ isApplication: true, amount, feeType: "application_fee" })
+              });
+              if (result.bkashURL) {
+                window.location.href = result.bkashURL;
+              }
+            } catch (error) {
+              form.querySelector(".form-status").textContent = error.message || "পেমেন্ট শুরু করা যায়নি।";
+            }
+          }
+        });
+      }
+
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
-        try { await submitJson("/api/applications", form); }
-        catch (error) { form.querySelector(".form-status").textContent = error.message || "জমা দেওয়া যায়নি।"; }
+        try {
+          await submitJson("/api/applications", form);
+          clearRegState();
+        } catch (error) {
+          form.querySelector(".form-status").textContent = error.message || "জমা দেওয়া যায়নি।";
+        }
       });
     });
 
@@ -1709,6 +1826,56 @@
         }
       });
     });
+
+    // bKash payment buttons on member profile page
+    app.querySelectorAll("[data-bkash-pay]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const statusEl = document.getElementById("bkashPaymentStatus");
+        if (statusEl) statusEl.textContent = "Processing...";
+        try {
+          const result = await api("/api/bkash/createPayment", {
+            method: "POST",
+            body: JSON.stringify({ feeType: button.dataset.bkashPay, amount: button.dataset.amount })
+          });
+          if (result.bkashURL) {
+            history.pushState({}, "", result.bkashURL);
+            renderPage();
+          } else {
+            if (statusEl) statusEl.textContent = result.error || "Payment initiation failed.";
+          }
+        } catch (error) {
+          if (statusEl) statusEl.textContent = error.message || "Payment initiation failed.";
+        }
+      });
+    });
+
+    // bKash mock confirm button
+    const confirmMockBtn = document.getElementById("confirmBkashMock");
+    if (confirmMockBtn) {
+      confirmMockBtn.addEventListener("click", async () => {
+        const paymentID = confirmMockBtn.dataset.paymentId;
+        const statusEl = document.getElementById("bkashMockStatus");
+        if (statusEl) statusEl.textContent = "Confirming...";
+        try {
+          const result = await api("/api/bkash/executePayment", {
+            method: "POST",
+            body: JSON.stringify({ paymentID })
+          });
+          if (statusEl) statusEl.textContent = `✅ Payment Successful! TrxID: ${result.trxID}`;
+          confirmMockBtn.disabled = true;
+          setTimeout(() => {
+            if (result.feeType === "application_fee") {
+              history.pushState({}, "", `/member-form?trxID=${result.trxID}`);
+            } else {
+              history.pushState({}, "", "/account/");
+            }
+            renderPage();
+          }, 2500);
+        } catch (error) {
+          if (statusEl) statusEl.textContent = error.message || "Payment execution failed.";
+        }
+      });
+    }
 
     app.querySelectorAll("form[data-forum-post]").forEach((form) => {
       form.addEventListener("submit", async (event) => {
@@ -1813,7 +1980,7 @@
     state.data.forumPosts = state.data.forumPosts || [];
     await loadAuth();
     if (normalizePath(window.location.pathname) === "/forum/") {
-      await refreshForum().catch(() => {});
+      await refreshForum().catch(() => { });
     }
     renderPage();
     // Auto-advance hero slider on home page

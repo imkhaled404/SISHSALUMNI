@@ -36,6 +36,7 @@ const EDITABLE_TABLES = [
 
 const OPTIONAL_COLUMNS = {
   committee: ["member_id"],
+  members: ["blood_group", "current_workplace"],
   posts: ["slug", "path"],
   applications: ["payload_json"],
   messages: ["payload_json"],
@@ -101,6 +102,16 @@ function firstDefined(...values) {
 
 function textValue(value) {
   return value === undefined || value === null ? "" : String(value);
+}
+
+function memberBloodGroup(member = {}, fallback) {
+  const value = firstDefined(member.bloodGroup, member.blood_group, fallback);
+  return value === undefined ? undefined : textValue(value);
+}
+
+function memberCurrentWorkplace(member = {}, fallback) {
+  const value = firstDefined(member.currentWorkplace, member.current_workplace, member.workplace, member.profession, fallback);
+  return value === undefined ? undefined : textValue(value);
 }
 
 function committeeType(value) {
@@ -188,6 +199,8 @@ function committeeFallback(person, member) {
     email: normalizedEmail(firstDefined(member?.email, person.memberEmail, person.email, "")),
     phone: textValue(firstDefined(member?.phone, person.memberPhone, person.phone, "")),
     address: textValue(firstDefined(member?.address, person.memberAddress, person.address, "")),
+    bloodGroup: textValue(firstDefined(member?.bloodGroup, member?.blood_group, person.memberBloodGroup, person.bloodGroup, person.blood_group, "")),
+    currentWorkplace: textValue(firstDefined(member?.currentWorkplace, member?.current_workplace, person.memberCurrentWorkplace, person.currentWorkplace, person.current_workplace, person.workplace, person.profession, "")),
     image: firstDefined(member?.image, person.memberImage, person.image) || "/assets/forum-logo.png",
     memberType: textValue(firstDefined(member?.type, person.memberType, "")),
     passingYear: textValue(firstDefined(person.passingYear, person.memberBatch, member?.batch, ""))
@@ -338,7 +351,13 @@ function ensureDefaultContent(site) {
   site.navigation = site.navigation || [];
   site.topLinks = site.topLinks || [];
   site.posts = site.posts || [];
+  site.payments = site.payments || [];
   site.forumPosts = site.forumPosts || [];
+
+  site.settings.memberMonthlyFee = site.settings.memberMonthlyFee || "";
+  site.settings.memberYearlyFee = site.settings.memberYearlyFee || "";
+  site.settings.newMemberFee = site.settings.newMemberFee || "";
+  site.settings.paymentTitle = site.settings.paymentTitle || "????? ??";
 
   site.settings.homeEventsEyebrow = site.settings.homeEventsEyebrow || "অ্যালামনাই অ্যাসোসিয়েশন ইভেন্টস";
   site.settings.homeEventsTitle = site.settings.homeEventsTitle || "অ্যালামনাই অ্যাসোসিয়েশন ইভেন্টস";
@@ -421,6 +440,8 @@ async function readSite(includePrivate = false) {
       address: r.address,
       batch: r.batch,
       type: r.type,
+      bloodGroup: r.blood_group || "",
+      currentWorkplace: r.current_workplace || "",
       image: r.image
     })),
     readSimpleRows("committee", (r) => r),
@@ -473,6 +494,8 @@ async function readSite(includePrivate = false) {
         message: r.message,
         phone: member?.phone || meta.phone || r.phone || "",
         address: member?.address || meta.address || "",
+        bloodGroup: member?.bloodGroup || meta.bloodGroup || "",
+        currentWorkplace: member?.currentWorkplace || meta.currentWorkplace || "",
         image: member?.image || meta.image || r.image || "/assets/forum-logo.png"
       };
     }),
@@ -483,12 +506,14 @@ async function readSite(includePrivate = false) {
   };
 
   if (includePrivate) {
-    const [applications, messages] = await Promise.all([
+    const [applications, messages, payments] = await Promise.all([
       readSubmissions("applications"),
-      readSubmissions("messages")
+      readSubmissions("messages"),
+      getPayments()
     ]);
     site.applications = applications;
     site.messages = messages;
+    site.payments = payments;
   }
 
   ensureDefaultContent(site);
@@ -651,12 +676,19 @@ async function createMember(row) {
     address: row.address || "",
     batch: row.batch || "",
     type: row.type || "General",
+    blood_group: memberBloodGroup(row, ""),
+    current_workplace: memberCurrentWorkplace(row, ""),
     image: row.image || "",
     sort_order: row.sort_order ?? 9999
   };
 
   if (isSupabase) {
     let result = await supabase.from("members").insert(member).select("id").single();
+    if (result.error && isMissingColumn(result.error)) {
+      const fallback = { ...member };
+      for (const key of OPTIONAL_COLUMNS.members || []) delete fallback[key];
+      result = await supabase.from("members").insert(fallback).select("id").single();
+    }
     if (result.error && /duplicate key value.*members_pkey|members_pkey/i.test(result.error.message || "")) {
       const maxResult = await supabase.from("members").select("id").order("id", { ascending: false }).limit(1).maybeSingle();
       const maxRow = assertSupabase(maxResult, "read max member id");
@@ -667,8 +699,8 @@ async function createMember(row) {
   }
 
   const result = db.prepare(
-    "INSERT INTO members (name, email, phone, address, batch, type, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(member.name, member.email, member.phone, member.address, member.batch, member.type, member.image, member.sort_order);
+    "INSERT INTO members (name, email, phone, address, batch, type, blood_group, current_workplace, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(member.name, member.email, member.phone, member.address, member.batch, member.type, member.blood_group, member.current_workplace, member.image, member.sort_order);
   return { ...member, id: Number(result.lastInsertRowid) };
 }
 
@@ -1032,18 +1064,18 @@ async function registerMemberUser(body) {
     address: body.address || "",
     batch: body.batch || "",
     type: body.type || "Registered Member",
+    blood_group: memberBloodGroup(body, ""),
+    current_workplace: memberCurrentWorkplace(body, ""),
     image: "",
     sort_order: 9999
   };
 
   if (isSupabase) {
-    const result = await supabase.from("members").insert(member).select("id").single();
-    const row = assertSupabase(result, "create member");
-    memberId = row.id;
+    memberId = await insertSupabaseReturningId("members", member, "create member");
   } else {
     const result = db.prepare(
-      "INSERT INTO members (name, email, phone, address, batch, type, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(member.name, member.email, member.phone, member.address, member.batch, member.type, member.image, member.sort_order);
+      "INSERT INTO members (name, email, phone, address, batch, type, blood_group, current_workplace, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(member.name, member.email, member.phone, member.address, member.batch, member.type, member.blood_group, member.current_workplace, member.image, member.sort_order);
     memberId = Number(result.lastInsertRowid);
   }
 
@@ -1093,6 +1125,8 @@ async function updateMemberProfile(memberId, data) {
     address: data.address,
     batch: data.batch,
     type: data.type,
+    blood_group: memberBloodGroup(data),
+    current_workplace: memberCurrentWorkplace(data),
     image: data.image
   });
   if (!Object.keys(row).length) return;
@@ -1258,6 +1292,8 @@ function applicationToMember(application) {
     address: application.currentAddress || application.permanentAddress || application.address || "",
     batch: application.passingYear || application.batch || application.admissionYear || "",
     type: application.memberType || application.type || "General",
+    bloodGroup: application.bloodGroup || application.blood_group || "",
+    currentWorkplace: application.currentWorkplace || application.current_workplace || application.workplace || application.profession || "",
     image: application.image || application.memberImage || application.photo || ""
   };
 }
@@ -1342,6 +1378,149 @@ async function deleteSubmission(table, id) {
   return { ok: true };
 }
 
+
+function paymentRow(row = {}) {
+  return {
+    id: row.id,
+    memberId: row.member_id || null,
+    memberName: row.member_name || "",
+    memberEmail: row.member_email || "",
+    memberPhone: row.member_phone || "",
+    feeType: row.fee_type || "",
+    feePeriod: row.fee_period || "",
+    amount: row.amount || "",
+    currency: row.currency || "BDT",
+    method: row.method || "bkash",
+    status: row.status || "pending",
+    invoiceNumber: row.invoice_number || "",
+    bkashPaymentId: row.bkash_payment_id || "",
+    bkashTrxId: row.bkash_trx_id || "",
+    rawResponse: fromJson(row.raw_response_json, {}),
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || ""
+  };
+}
+
+function paymentInsertRow(payment = {}) {
+  const now = new Date().toISOString();
+  return {
+    member_id: maybeNumber(payment.memberId) || null,
+    member_name: payment.memberName || "",
+    member_email: normalizedEmail(payment.memberEmail || ""),
+    member_phone: payment.memberPhone || "",
+    fee_type: payment.feeType || "",
+    fee_period: payment.feePeriod || "",
+    amount: String(payment.amount || ""),
+    currency: payment.currency || "BDT",
+    method: payment.method || "bkash",
+    status: payment.status || "pending",
+    invoice_number: payment.invoiceNumber || `PAY-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
+    bkash_payment_id: payment.bkashPaymentId || "",
+    bkash_trx_id: payment.bkashTrxId || "",
+    raw_response_json: toJson(payment.rawResponse || {}),
+    created_at: now,
+    updated_at: now
+  };
+}
+
+function paymentUpdateRow(updates = {}) {
+  const row = {};
+  if (updates.status !== undefined) row.status = updates.status;
+  if (updates.bkashPaymentId !== undefined) row.bkash_payment_id = updates.bkashPaymentId || "";
+  if (updates.bkashTrxId !== undefined) row.bkash_trx_id = updates.bkashTrxId || "";
+  if (updates.rawResponse !== undefined) row.raw_response_json = toJson(updates.rawResponse || {});
+  if (updates.feePeriod !== undefined) row.fee_period = updates.feePeriod || "";
+  if (updates.amount !== undefined) row.amount = String(updates.amount || "");
+  if (Object.keys(row).length) row.updated_at = new Date().toISOString();
+  return row;
+}
+
+async function getPayments(filter = {}) {
+  if (isSupabase) {
+    let query = supabase.from("member_payments").select("*").order("created_at", { ascending: false });
+    if (filter.memberId) query = query.eq("member_id", filter.memberId);
+    const result = await query;
+    if (result.error && isMissingTable(result.error)) return [];
+    return (assertSupabase(result, "read payments") || []).map(paymentRow);
+  }
+
+  const params = [];
+  let where = "";
+  if (filter.memberId) {
+    where = " WHERE member_id = ?";
+    params.push(filter.memberId);
+  }
+  const res = await querySQLite(`SELECT * FROM member_payments${where} ORDER BY created_at DESC`, params);
+  return res.rows.map(paymentRow);
+}
+
+async function getPaymentByBkashPaymentId(paymentId) {
+  if (!paymentId) return null;
+  if (isSupabase) {
+    const result = await supabase.from("member_payments").select("*").eq("bkash_payment_id", paymentId).maybeSingle();
+    if (result.error && isMissingTable(result.error)) return null;
+    const row = assertSupabase(result, "read payment by bkash payment id");
+    return row ? paymentRow(row) : null;
+  }
+  const res = await querySQLite("SELECT * FROM member_payments WHERE bkash_payment_id = ?", [paymentId]);
+  return res.rows[0] ? paymentRow(res.rows[0]) : null;
+}
+
+async function createMemberPayment(payment = {}) {
+  const row = paymentInsertRow(payment);
+  if (isSupabase) {
+    const result = await supabase.from("member_payments").insert(row).select("*").single();
+    if (result.error && isMissingTable(result.error)) {
+      return { error: "Payment table is not configured. Run the latest Supabase schema first." };
+    }
+    return { ok: true, payment: paymentRow(assertSupabase(result, "create payment")) };
+  }
+
+  const result = db.prepare(`
+    INSERT INTO member_payments (member_id, member_name, member_email, member_phone, fee_type, fee_period, amount, currency, method, status, invoice_number, bkash_payment_id, bkash_trx_id, raw_response_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    row.member_id,
+    row.member_name,
+    row.member_email,
+    row.member_phone,
+    row.fee_type,
+    row.fee_period,
+    row.amount,
+    row.currency,
+    row.method,
+    row.status,
+    row.invoice_number,
+    row.bkash_payment_id,
+    row.bkash_trx_id,
+    row.raw_response_json,
+    row.created_at,
+    row.updated_at
+  );
+  const created = (await querySQLite("SELECT * FROM member_payments WHERE id = ?", [Number(result.lastInsertRowid)])).rows[0];
+  return { ok: true, payment: paymentRow(created) };
+}
+
+async function updateMemberPayment(paymentId, updates = {}) {
+  const row = paymentUpdateRow(updates);
+  if (!paymentId || !Object.keys(row).length) return { ok: true };
+
+  if (isSupabase) {
+    const result = await supabase.from("member_payments").update(row).eq("id", paymentId).select("*").maybeSingle();
+    if (result.error && isMissingTable(result.error)) return { error: "Payment table is not configured. Run the latest Supabase schema first." };
+    const updated = assertSupabase(result, "update payment");
+    return { ok: true, payment: updated ? paymentRow(updated) : null };
+  }
+
+  const columns = Object.keys(row);
+  const assignments = columns.map((key) => `${key} = ?`).join(", ");
+  await querySQLite(
+    `UPDATE member_payments SET ${assignments} WHERE id = ?`,
+    [...columns.map((key) => row[key]), paymentId]
+  );
+  const updated = (await querySQLite("SELECT * FROM member_payments WHERE id = ?", [paymentId])).rows[0];
+  return { ok: true, payment: updated ? paymentRow(updated) : null };
+}
 async function forumAuthor(user) {
   if (!user) return "Member";
   const member = user.member_id ? await getMemberById(user.member_id) : null;
@@ -1571,6 +1750,8 @@ function memberProfileFromCommitteePerson(person = {}, member = null) {
     address: firstDefined(person.memberAddress, person.address, member?.address),
     batch: firstDefined(person.memberBatch, person.batch, person.passingYear, member?.batch),
     type: firstDefined(person.memberType, member?.type),
+    blood_group: firstDefined(person.memberBloodGroup, person.bloodGroup, person.blood_group, member?.bloodGroup, member?.blood_group),
+    current_workplace: firstDefined(person.memberCurrentWorkplace, person.currentWorkplace, person.current_workplace, member?.currentWorkplace, member?.current_workplace),
     image: firstDefined(person.memberImage, person.image, member?.image)
   };
   const profile = {};
@@ -1616,6 +1797,8 @@ function committeeRowFromPerson(person = {}, sortOrder = 0, data = {}) {
     email: fallback.email,
     phone: fallback.phone,
     address: fallback.address,
+    bloodGroup: fallback.bloodGroup,
+    currentWorkplace: fallback.currentWorkplace,
     image: fallback.image,
     memberType: fallback.memberType,
     passingYear: row.passing_year,
@@ -1651,6 +1834,8 @@ async function saveMembersSection(members = []) {
         address: member.address || "",
         batch: member.batch || "",
         type: member.type || "",
+        blood_group: memberBloodGroup(member, ""),
+        current_workplace: memberCurrentWorkplace(member, ""),
         image: member.image || "",
         sort_order: sort++
       };
@@ -1682,13 +1867,15 @@ async function saveMembersSection(members = []) {
       member.address || "",
       member.batch || "",
       member.type || "",
+      memberBloodGroup(member, ""),
+      memberCurrentWorkplace(member, ""),
       member.image || "",
       sort++
     ];
     if (id) {
       await querySQLite(
-        `INSERT INTO members (id, name, email, phone, address, batch, type, image, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO members (id, name, email, phone, address, batch, type, blood_group, current_workplace, image, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            email = excluded.email,
@@ -1696,13 +1883,15 @@ async function saveMembersSection(members = []) {
            address = excluded.address,
            batch = excluded.batch,
            type = excluded.type,
+           blood_group = excluded.blood_group,
+           current_workplace = excluded.current_workplace,
            image = excluded.image,
            sort_order = excluded.sort_order`,
         [id, ...row]
       );
     } else {
       const result = db.prepare(
-        "INSERT INTO members (name, email, phone, address, batch, type, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO members (name, email, phone, address, batch, type, blood_group, current_workplace, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(...row);
       incomingIds.add(String(Number(result.lastInsertRowid)));
     }
@@ -1776,6 +1965,8 @@ function committeeMetaFromRows(rows = []) {
         email: firstDefined(source.email, row.email),
         phone: firstDefined(source.phone, row.phone),
         address: firstDefined(source.address, row.address),
+        bloodGroup: firstDefined(source.bloodGroup, row.bloodGroup),
+        currentWorkplace: firstDefined(source.currentWorkplace, row.currentWorkplace),
         image: firstDefined(source.image, row.image),
         memberType: source.memberType,
         passingYear: firstDefined(source.passingYear, row.passing_year)
@@ -1857,49 +2048,49 @@ async function saveSiteSections(data, keys = payloadSectionKeys(data)) {
     if (sectionKeys.includes("navigation")) {
       let sort = 0;
       await saveSupabaseRows("navigation", (data.navigation || []).map((item) => ({
-          id: maybeNumber(item.id),
-          label: item.label || "Menu item",
-          path: normalizePath(item.path),
-          sort_order: sort++
+        id: maybeNumber(item.id),
+        label: item.label || "Menu item",
+        path: normalizePath(item.path),
+        sort_order: sort++
       })), "save navigation");
     }
 
     if (sectionKeys.includes("topLinks")) {
       let sort = 0;
       await saveSupabaseRows("top_links", (data.topLinks || []).map((item) => ({
-          id: maybeNumber(item.id),
-          label: item.label || "Top link",
-          path: normalizePath(item.path),
-          sort_order: sort++
+        id: maybeNumber(item.id),
+        label: item.label || "Top link",
+        path: normalizePath(item.path),
+        sort_order: sort++
       })), "save top links");
     }
 
     if (sectionKeys.includes("heroSlides")) {
       let sort = 0;
       await saveSupabaseRows("hero_slides", (data.heroSlides || []).map((slide) => ({
-          id: maybeNumber(slide.id),
-          image: slide.image || "/assets/forum-logo.png",
-          eyebrow: slide.eyebrow || "",
-          title: slide.title || "Welcome",
-          sort_order: sort++
+        id: maybeNumber(slide.id),
+        image: slide.image || "/assets/forum-logo.png",
+        eyebrow: slide.eyebrow || "",
+        title: slide.title || "Welcome",
+        sort_order: sort++
       })), "save hero slides");
     }
 
     if (sectionKeys.includes("pages")) {
       let sort = 0;
       await saveSupabaseRows("pages", (data.pages || []).map((page) => ({
-          id: maybeNumber(page.id),
-          page_key: page.key || slugify(page.title, "page"),
-          path: normalizePath(page.path),
-          title: page.title || "Untitled page",
-          subtitle: page.subtitle || "",
-          image: page.image || "",
-          render: page.render || "simple",
-          download_label: page.downloadLabel || "",
-          download_url: page.downloadUrl || "",
-          filter: page.filter || "",
-          body_json: toJson(page.body || []),
-          sort_order: sort++
+        id: maybeNumber(page.id),
+        page_key: page.key || slugify(page.title, "page"),
+        path: normalizePath(page.path),
+        title: page.title || "Untitled page",
+        subtitle: page.subtitle || "",
+        image: page.image || "",
+        render: page.render || "simple",
+        download_label: page.downloadLabel || "",
+        download_url: page.downloadUrl || "",
+        filter: page.filter || "",
+        body_json: toJson(page.body || []),
+        sort_order: sort++
       })), "save pages");
     }
 
@@ -1935,10 +2126,10 @@ async function saveSiteSections(data, keys = payloadSectionKeys(data)) {
     if (sectionKeys.includes("gallery")) {
       let sort = 0;
       await saveSupabaseRows("gallery", (data.gallery || []).map((item) => ({
-          id: maybeNumber(item.id),
-          image: item.image || "/assets/forum-logo.png",
-          title: item.title || "",
-          sort_order: sort++
+        id: maybeNumber(item.id),
+        image: item.image || "/assets/forum-logo.png",
+        title: item.title || "",
+        sort_order: sort++
       })), "save gallery");
     }
   } else {
@@ -2142,6 +2333,8 @@ async function replaceSite(data) {
         address: member.address || "",
         batch: member.batch || "",
         type: member.type || "",
+        blood_group: memberBloodGroup(member, ""),
+        current_workplace: memberCurrentWorkplace(member, ""),
         image: member.image || "",
         sort_order: sort++
       });
@@ -2245,7 +2438,7 @@ async function replaceSiteSQLite(data) {
   sort = 0;
   for (const member of data.members || []) {
     await querySQLite(
-      "INSERT INTO members (id, name, email, phone, address, batch, type, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO members (id, name, email, phone, address, batch, type, blood_group, current_workplace, image, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         maybeNumber(member.id) || null,
         member.name || "Member",
@@ -2254,6 +2447,8 @@ async function replaceSiteSQLite(data) {
         member.address || "",
         member.batch || "",
         member.type || "",
+        memberBloodGroup(member, ""),
+        memberCurrentWorkplace(member, ""),
         member.image || "",
         sort++
       ]
@@ -2329,11 +2524,13 @@ async function init() {
     CREATE TABLE IF NOT EXISTS gallery (id INTEGER PRIMARY KEY AUTOINCREMENT, image TEXT NOT NULL, title TEXT, sort_order INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL, phone TEXT NOT NULL, batch TEXT NOT NULL, message TEXT, status TEXT NOT NULL DEFAULT 'new', payload_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL, phone TEXT, subject TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'new', payload_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS members (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, batch TEXT, type TEXT, image TEXT, sort_order INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS members (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, batch TEXT, type TEXT, blood_group TEXT, current_workplace TEXT, image TEXT, sort_order INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, permissions_json TEXT, is_admin INTEGER DEFAULT 0, must_change_password INTEGER DEFAULT 0, member_id INTEGER);
     CREATE TABLE IF NOT EXISTS forum_posts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, author_name TEXT, title TEXT NOT NULL, category TEXT, body TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS forum_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL, user_id TEXT NOT NULL, author_name TEXT, body TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS forum_likes (post_id INTEGER NOT NULL, user_id TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (post_id, user_id));
+    CREATE TABLE IF NOT EXISTS member_payments (id INTEGER PRIMARY KEY AUTOINCREMENT, member_id INTEGER, member_name TEXT, member_email TEXT, member_phone TEXT, fee_type TEXT NOT NULL, fee_period TEXT, amount TEXT NOT NULL, currency TEXT NOT NULL DEFAULT 'BDT', method TEXT NOT NULL DEFAULT 'bkash', status TEXT NOT NULL DEFAULT 'pending', invoice_number TEXT UNIQUE, bkash_payment_id TEXT, bkash_trx_id TEXT, raw_response_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS images (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL DEFAULT 'general', reference_id INTEGER, filename TEXT NOT NULL, url TEXT NOT NULL, storage TEXT NOT NULL DEFAULT 'local', created_at TEXT DEFAULT CURRENT_TIMESTAMP);
   `);
 
   try {
@@ -2356,6 +2553,18 @@ async function init() {
 
   try {
     db.exec("ALTER TABLE committee ADD COLUMN designation_order INTEGER NOT NULL DEFAULT 9999");
+  } catch {
+    // Column already exists in newer local databases.
+  }
+
+  try {
+    db.exec("ALTER TABLE members ADD COLUMN blood_group TEXT");
+  } catch {
+    // Column already exists in newer local databases.
+  }
+
+  try {
+    db.exec("ALTER TABLE members ADD COLUMN current_workplace TEXT");
   } catch {
     // Column already exists in newer local databases.
   }
@@ -2388,6 +2597,10 @@ module.exports = {
   resetUserPassword,
   updateSubmission,
   deleteSubmission,
+  getPayments,
+  getPaymentByBkashPaymentId,
+  createMemberPayment,
+  updateMemberPayment,
   getForumPosts,
   createForumPost,
   addForumComment,
@@ -2407,5 +2620,31 @@ module.exports = {
   addMessage: (body) => addSubmission("messages", body),
   hashPassword,
   fromJson,
-  init
+  init,
+  addImage: async ({ type = "general", referenceId = null, filename, url, storage = "local" }) => {
+    const now = new Date().toISOString();
+    if (isSupabase) {
+      const result = await supabase.from("images").insert({
+        type, reference_id: referenceId, filename, url, storage, created_at: now
+      }).select("*").single();
+      return assertSupabase(result, "add image");
+    }
+    const res = await querySQLite(
+      "INSERT INTO images (type, reference_id, filename, url, storage, created_at) VALUES (?,?,?,?,?,?)",
+      [type, referenceId, filename, url, storage, now]
+    );
+    return (await querySQLite("SELECT * FROM images WHERE id = ?", [Number(res.lastInsertRowid)])).rows[0];
+  },
+  getImages: async ({ type } = {}) => {
+    if (isSupabase) {
+      let q = supabase.from("images").select("*").order("created_at", { ascending: false });
+      if (type) q = q.eq("type", type);
+      const result = await q;
+      return assertSupabase(result, "get images") || [];
+    }
+    const where = type ? " WHERE type = ?" : "";
+    const params = type ? [type] : [];
+    const res = await querySQLite(`SELECT * FROM images${where} ORDER BY created_at DESC`, params);
+    return res.rows;
+  }
 };

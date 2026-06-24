@@ -12,8 +12,8 @@
     } catch {
       return {
         getItem: () => null,
-        setItem: () => {},
-        removeItem: () => {}
+        setItem: () => { },
+        removeItem: () => { }
       };
     }
   })();
@@ -27,6 +27,7 @@
     { key: "manage_committee", label: "Committee" },
     { key: "manage_members", label: "Members" },
     { key: "manage_gallery", label: "Gallery" },
+    { key: "manage_payments", label: "Payments" },
     { key: "view_submissions", label: "Applications and messages" },
     { key: "upload_image", label: "Asset uploads" },
     { key: "edit_any", label: "Everything" }
@@ -46,11 +47,12 @@
     committee: "manage_committee",
     members: "manage_members",
     gallery: "manage_gallery",
+    payments: "manage_payments",
     applications: "view_submissions",
     messages: "view_submissions"
   };
 
-  const SAVE_TABS = new Set(["settings", "menus", "slides", "pages", "posts", "committee", "members", "gallery"]);
+  const SAVE_TABS = new Set(["settings", "menus", "slides", "pages", "posts", "committee", "members", "gallery", "payments"]);
 
   const state = {
     token: storage.getItem(tokenKey),
@@ -252,6 +254,24 @@
     `;
   }
 
+  const BLOOD_GROUPS = ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"];
+
+  function selectField(label, name, value = "", optionsList = [], options = {}) {
+    const wide = options.wide ? " wide-field" : "";
+    const opts = optionsList.map(o =>
+      `<option value="${escapeHtml(o)}"${value === o ? " selected" : ""}>${escapeHtml(o)}</option>`
+    ).join("");
+    return `
+      <label class="admin-field${wide}">
+        <span>${escapeHtml(label)}</span>
+        <select name="${escapeHtml(name)}">
+          <option value="">-- Select --</option>
+          ${opts}
+        </select>
+      </label>
+    `;
+  }
+
   function displayField(label, value = "", options = {}) {
     return `
       <label class="admin-field${options.wide ? " wide-field" : ""}">
@@ -360,13 +380,13 @@
           <input data-member-search value="" autocomplete="off" placeholder="${escapeHtml(placeholder)}">
           <div class="select2-lite-menu" data-member-results hidden>
             ${members.length
-      ? members.map((member) => `
+        ? members.map((member) => `
                 <button type="button" data-member-option="${escapeHtml(member.id || "")}" data-search="${escapeHtml(memberSearchText(member))}">
                   <strong>${escapeHtml(member.name || "Member")}</strong>
                   <span>${escapeHtml([member.email, member.phone, member.batch ? `Batch ${member.batch}` : ""].filter(Boolean).join(" | "))}</span>
                 </button>
               `).join("") + `<p data-member-empty hidden>No matching unused members found.</p>`
-      : `<p>No unused members available for ${escapeHtml(session)}.</p>`}
+        : `<p>No unused members available for ${escapeHtml(session)}.</p>`}
           </div>
         </div>
         <input type="hidden" name="memberId" value="${escapeHtml(selectedMemberId || "")}">
@@ -403,6 +423,8 @@
       ${field("Member email", "memberEmail", person.memberEmail ?? member.email ?? person.email ?? "", "email")}
       ${field("Member phone", "memberPhone", person.memberPhone ?? member.phone ?? person.phone ?? "")}
       ${field("Member address", "memberAddress", person.memberAddress ?? member.address ?? person.address ?? "", "text", { wide: true })}
+      ${selectField("Member blood group", "memberBloodGroup", person.memberBloodGroup ?? member.bloodGroup ?? person.bloodGroup ?? "", BLOOD_GROUPS)}
+      ${field("Member workplace", "memberCurrentWorkplace", person.memberCurrentWorkplace ?? member.currentWorkplace ?? person.currentWorkplace ?? "")}
       ${field("Member batch", "memberBatch", person.memberBatch ?? member.batch ?? person.passingYear ?? "")}
       ${field("Member type", "memberType", person.memberType ?? member.type ?? "")}
       ${field("Member image path", "memberImage", person.memberImage ?? member.image ?? person.image ?? "")}
@@ -460,6 +482,7 @@
       gallery: (data.gallery || []).length,
       applications: (data.applications || []).length,
       messages: (data.messages || []).length,
+      payments: (data.payments || []).length,
       users: state.usersLoaded ? (state.users || []).filter((user) => user.user_id).length : ""
     };
   }
@@ -496,6 +519,7 @@
       ["committee", "Committee", counts.committee],
       ["members", "Members", counts.members],
       ["gallery", "Gallery", counts.gallery],
+      ["payments", "Payments", counts.payments],
       ["applications", "Applications", counts.applications],
       ["messages", "Messages", counts.messages],
       ["users", "Users", counts.users],
@@ -774,7 +798,7 @@
         ${editableList("Top links", "Secondary links shown in the top bar and footer.", "topLinks", [
       { key: "label", label: "Label" },
       { key: "path", label: "Path" }
-      ])}
+    ])}
       </div>
       ${sectionSave("Save menus")}
     `;
@@ -987,6 +1011,8 @@
           ${field("Email", "email", member.email || "", "email")}
           ${field("Phone", "phone", member.phone || "")}
           ${field("Address", "address", member.address || "")}
+          ${selectField("Blood Group", "bloodGroup", member.bloodGroup || "", BLOOD_GROUPS)}
+          ${field("Current Workplace", "currentWorkplace", member.currentWorkplace || "")}
           ${field("Batch", "batch", member.batch || "")}
           ${field("Type", "type", member.type || "")}
           ${field("Image path", "image", member.image || "")}
@@ -1072,9 +1098,9 @@
               <tr data-submission-row="${escapeHtml(type)}" data-id="${escapeHtml(item.id || "")}" data-index="${index}">
                 <td>${escapeHtml(item.createdAt || item.created_at || "")}</td>
                 ${columns.map(([key]) => key === "status"
-        ? `<td>${statusSelect(item.status || "new")}</td>`
-        : `<td><input data-submission-field="${key}" value="${escapeHtml(item[key] || "")}"></td>`
-      ).join("")}
+      ? `<td>${statusSelect(item.status || "new")}</td>`
+      : `<td><input data-submission-field="${key}" value="${escapeHtml(item[key] || "")}"></td>`
+    ).join("")}
                 <td class="row-action-cell">
                   <button class="plain-button" data-save-submission="${escapeHtml(type)}" type="button">Save</button>
                   ${type === "applications" ? `
@@ -1085,6 +1111,48 @@
                 </td>
               </tr>
             `).join("") || `<tr><td colspan="${columns.length + 2}">No records</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderPayments() {
+    const items = state.data.payments || [];
+    return `
+      ${panelIntro("Payments", "Review member association fees and payment status.")}
+      <div class="table-wrap">
+        <table class="members-table admin-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Member</th>
+              <th>Fee Type</th>
+              <th>Amount</th>
+              <th>Method</th>
+              <th>Status</th>
+              <th>TrxID</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map((item) => `
+              <tr>
+                <td>${escapeHtml(item.created_at || item.createdAt || "")}</td>
+                <td>
+                  <strong>${escapeHtml(item.member_name || "")}</strong><br>
+                  <small>${escapeHtml(item.member_email || item.member_phone || "")}</small>
+                </td>
+                <td>${escapeHtml(item.fee_type || "")} ${item.fee_period ? `(${escapeHtml(item.fee_period)})` : ""}</td>
+                <td>${escapeHtml(item.amount || "")} ${escapeHtml(item.currency || "BDT")}</td>
+                <td>${escapeHtml((item.method || "bKash").toUpperCase())}</td>
+                <td>
+                  <span class="status-tag status-${(item.status || "pending").toLowerCase()}">
+                    ${escapeHtml((item.status || "pending").toUpperCase())}
+                  </span>
+                </td>
+                <td><code>${escapeHtml(item.bkash_trx_id || "")}</code></td>
+              </tr>
+            `).join("") || `<tr><td colspan="7">No payments recorded yet.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -1302,6 +1370,8 @@
           ${field("Email", "email", member.email || "", "email")}
           ${field("Phone", "phone", member.phone || "")}
           ${field("Address", "address", member.address || "")}
+          ${selectField("Blood Group", "bloodGroup", member.bloodGroup || "", BLOOD_GROUPS)}
+          ${field("Current Workplace", "currentWorkplace", member.currentWorkplace || "")}
           ${field("Batch", "batch", member.batch || "")}
           ${field("Type", "type", member.type || "")}
           ${field("Image path", "image", member.image || "")}
@@ -1394,7 +1464,7 @@
       const session = committeeSessionOptions()[0] || "2026-2027";
       return { memberId: "", role: "সদস্য", type: "আহবায়ক কমিটি", status: "active", year: session, designationOrder: 100, sortOrder: (state.data.committee || []).length, passingYear: "", biography: "", message: "" };
     }
-    if (type === "members") return { name: "New member", email: "", phone: "", address: "", batch: "", type: "General", image: "" };
+    if (type === "members") return { name: "New member", email: "", phone: "", address: "", bloodGroup: "", currentWorkplace: "", batch: "", type: "General", image: "" };
     if (type === "gallery") return { title: "Gallery image", image: "/assets/forum-logo.png" };
     return {};
   }
@@ -1884,6 +1954,7 @@
     if (state.tab === "committee") body = renderCommittee();
     if (state.tab === "members") body = renderMembers();
     if (state.tab === "gallery") body = renderGallery();
+    if (state.tab === "payments") body = renderPayments();
     if (state.tab === "applications") body = renderSubmissions("applications");
     if (state.tab === "messages") body = renderSubmissions("messages");
     if (state.tab === "users") body = renderUsers();
